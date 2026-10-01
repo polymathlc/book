@@ -1,3 +1,11 @@
+import {
+  cleanFormat,
+  normaliseRuns,
+  validColour,
+  resizeCells,
+  cleanShortcuts,
+  DEFAULT_SHORTCUTS,
+} from "./formatting.js";
 export const PX_PER_MM = 96 / 25.4;
 export const PAGE_W = 210 * PX_PER_MM;
 export const PAGE_H = 297 * PX_PER_MM;
@@ -21,18 +29,21 @@ export const clone = (value) => structuredClone(value);
 export function blankProject() {
   return {
     version: 1,
+    id: uid(),
     title: "PSLE Mathematics",
     level: "Primary 6",
     subject: "Mathematics",
     firstPage: 1,
     fontSize: 16,
     snap: true,
+    shortcuts: { ...DEFAULT_SHORTCUTS },
+    aiGuidance: "",
     pages: [{ id: uid(), blocks: [] }],
   };
 }
 export function makeBlock(type, fields = {}) {
   const defaults = {
-    text: { text: "", style: "body", align: "left" },
+    text: { text: "", style: "body", align: "left", part: "" },
     habit: { number: "01", title: "Look for a pattern" },
     image: {
       src: "",
@@ -47,7 +58,37 @@ export function makeBlock(type, fields = {}) {
       caption: "",
     },
     working: { height: 180, ruled: false, label: "SHOW YOUR WORKING" },
-    answer: { text: "Answer" },
+    answer: {
+      text: "Answer",
+      value: "",
+      part: "",
+      showLine: true,
+      align: "left",
+    },
+    shape: {
+      kind: "rounded",
+      fill: "#edf6f6",
+      stroke: "#239ba5",
+      strokeWidth: 2,
+      radius: 16,
+      w: 240,
+      height: 100,
+      x: 40,
+      y: 80,
+      floating: true,
+    },
+    table: {
+      rows: 3,
+      cols: 3,
+      cells: resizeCells([], 3, 3),
+      headerRow: true,
+      borderColor: "#8ba4ac",
+      borderWidth: 1,
+      rowHeight: 36,
+      cellPadding: 8,
+      w: CONTENT_W,
+      align: "left",
+    },
     divider: {},
   };
   return { id: uid(), type, ...defaults[type], ...fields };
@@ -97,7 +138,12 @@ export function validateProject(input) {
   out.fontSize = num(input.fontSize, 13, 20, 16);
   out.firstPage = Math.round(num(input.firstPage, 1, 9999, 1));
   out.snap = input.snap !== false;
-  const ids = new Set();
+  out.shortcuts = cleanShortcuts(input.shortcuts);
+  out.aiGuidance = str(input.aiGuidance, 10000);
+  if (typeof input.id === "string" && /^[\w-]{1,80}$/.test(input.id))
+    out.id = input.id;
+  const ids = new Set(),
+    pageIds = new Set();
   let total = 0;
   out.pages = input.pages.map((p) => {
     if (
@@ -107,12 +153,24 @@ export function validateProject(input) {
     )
       throw new Error("Project has too many elements.");
     return {
-      id: uid(),
+      id:
+        typeof p.id === "string" &&
+        /^[\w-]{1,80}$/.test(p.id) &&
+        !pageIds.has(p.id)
+          ? (pageIds.add(p.id), p.id)
+          : uid(),
       blocks: p.blocks.map((b) => {
         if (
-          !["text", "habit", "image", "working", "answer", "divider"].includes(
-            b.type,
-          )
+          ![
+            "text",
+            "habit",
+            "image",
+            "working",
+            "answer",
+            "divider",
+            "shape",
+            "table",
+          ].includes(b.type)
         )
           throw new Error("Unknown element in project.");
         const v = makeBlock(b.type);
@@ -123,8 +181,26 @@ export function validateProject(input) {
             ? b.id
             : uid();
         ids.add(v.id);
-        for (const k of ["text", "title", "number", "caption", "name", "label"])
-          if (k in b) v[k] = str(b[k], k === "text" ? 100000 : 500);
+        for (const k of [
+          "text",
+          "value",
+          "title",
+          "number",
+          "caption",
+          "name",
+          "label",
+        ])
+          if (k in b)
+            v[k] = str(b[k], ["text", "value"].includes(k) ? 100000 : 500);
+        v.part = str(b.part, 12).replace(/[()]/g, "");
+        Object.assign(v, cleanFormat(b));
+        v.lineSpacing = num(b.lineSpacing, 0.8, 4, 1.6);
+        if (b.type === "text" || b.type === "answer")
+          v.runs = normaliseRuns(
+            b.type === "answer" ? v.value : v.text,
+            b.runs,
+          );
+        v.showLine = b.showLine !== false;
         v.floating = !!b.floating;
         v.x = num(b.x, 0, CONTENT_W, 0);
         v.y = num(b.y, 0, CONTENT_H, 0);
@@ -139,6 +215,33 @@ export function validateProject(input) {
           : "left";
         v.height = num(b.height, 20, CONTENT_H, 180);
         v.ruled = !!b.ruled;
+        if (b.type === "shape") {
+          v.kind = [
+            "rectangle",
+            "rounded",
+            "circle",
+            "ellipse",
+            "line",
+          ].includes(b.kind)
+            ? b.kind
+            : "rounded";
+          v.fill = b.fill === "none" ? "none" : validColour(b.fill, "#edf6f6");
+          v.stroke = validColour(b.stroke, "#239ba5");
+          v.strokeWidth = num(b.strokeWidth, 0, 24, 2);
+          v.radius = num(b.radius, 0, 200, 16);
+          if (v.kind === "circle")
+            v.height = v.w = Math.min(v.w, CONTENT_H, CONTENT_W);
+        }
+        if (b.type === "table") {
+          v.rows = Math.round(num(b.rows, 1, 50, 3));
+          v.cols = Math.round(num(b.cols, 1, 12, 3));
+          v.cells = resizeCells(b.cells, v.rows, v.cols);
+          v.headerRow = b.headerRow !== false;
+          v.borderColor = validColour(b.borderColor, "#8ba4ac");
+          v.borderWidth = num(b.borderWidth, 0, 12, 1);
+          v.rowHeight = num(b.rowHeight, 16, 180, 36);
+          v.cellPadding = num(b.cellPadding, 0, 30, 8);
+        }
         if (b.type === "image") {
           if (!isImageData(b.src) || b.src.length > 45000000)
             throw new Error("Project contains an invalid or oversized image.");

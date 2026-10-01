@@ -24,6 +24,8 @@
         ><button id="undo" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button
         ><button id="redo" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">
           ↷</button
+        ><button id="cloud-books">Cloud books</button
+        ><span id="cloud-status" role="status">Cloud: sign in</span
         ><button id="export-project">Save project</button
         ><button id="import-project">Open project</button
         ><button id="print" class="primary">Print / PDF</button>
@@ -80,13 +82,31 @@
           ></textarea>
           <button id="add-text" class="full primary">+ Add text</button>
           <div class="button-grid">
-            <button id="add-image">+ Image</button
+            <button id="add-textbox">+ Text box</button
+            ><button id="add-image">+ Image</button
             ><button id="add-habit">+ Math Habit</button
             ><button id="add-working">+ Working space</button
             ><button id="add-answer">+ Answer line</button
+            ><button id="add-question-parts">+ Question a, b, c</button
+            ><button id="add-answer-parts">+ Answers a, b, c</button
+            ><button id="add-table">+ Table</button
+            ><button id="add-shape">+ Shape</button
             ><button id="add-divider">+ Divider</button
             ><button id="add-hexagon">+ Dot diagram</button>
           </div>
+          <div class="shape-palette" id="shape-palette" hidden>
+            <button data-shape="rectangle">Rectangle</button
+            ><button data-shape="rounded">Rounded rectangle</button>
+            <button data-shape="circle">Circle</button
+            ><button data-shape="ellipse">Ellipse</button
+            ><button data-shape="line">Line</button>
+          </div>
+          <button id="ai-tools" class="full ai-button">
+            ✦ AI answers &amp; workings
+          </button>
+          <button id="keyboard-shortcuts" class="full">
+            Keyboard shortcuts
+          </button>
           <div
             id="drop-zone"
             tabindex="0"
@@ -132,6 +152,106 @@
             ><button id="export-svg">SVG</button>
           </div>
         </div>
+        <div
+          id="format-toolbar"
+          class="format-toolbar"
+          role="toolbar"
+          aria-label="Text formatting"
+        >
+          <select id="text-font" aria-label="Font family"></select>
+          <label class="size-control"
+            ><input
+              id="text-size"
+              type="number"
+              min="6"
+              max="96"
+              step="0.5"
+              value="12"
+              aria-label="Font size (pt)"
+            />pt</label
+          >
+          <button
+            id="format-bold"
+            title="Bold (Ctrl/⌘+B)"
+            aria-label="Bold"
+            aria-pressed="false"
+          >
+            <b>B</b>
+          </button>
+          <button
+            id="format-italic"
+            title="Italic (Ctrl/⌘+I)"
+            aria-label="Italic"
+            aria-pressed="false"
+          >
+            <i>I</i>
+          </button>
+          <button
+            id="format-underline"
+            title="Underline (Ctrl/⌘+U)"
+            aria-label="Underline"
+            aria-pressed="false"
+          >
+            <u>U</u>
+          </button>
+          <label
+            class="size-control spacing-control"
+            title="Line spacing: 1 is single, 2 is double"
+            ><span>Spacing</span
+            ><input
+              id="text-spacing"
+              type="number"
+              min="0.8"
+              max="4"
+              step="0.05"
+              value="1.6"
+              aria-label="Line spacing"
+          /></label>
+          <input
+            id="text-colour"
+            type="color"
+            value="#203c44"
+            aria-label="Font colour"
+            title="Font colour"
+          />
+          <div class="toolbar-divider"></div>
+          <button
+            data-text-align="left"
+            title="Align left"
+            aria-label="Align text left"
+          >
+            ≡←
+          </button>
+          <button
+            data-text-align="center"
+            title="Align centre"
+            aria-label="Align text centre"
+          >
+            ≡
+          </button>
+          <button
+            data-text-align="right"
+            title="Align right"
+            aria-label="Align text right"
+          >
+            →≡
+          </button>
+          <button
+            data-text-align="justify"
+            title="Justify"
+            aria-label="Justify text"
+          >
+            ☰
+          </button>
+          <div class="toolbar-divider"></div>
+          <button id="copy-format" title="Copy formatting (Ctrl/⌘+Shift+C)">
+            Copy format
+          </button>
+          <button id="paste-format" title="Paste formatting (Ctrl/⌘+Shift+V)">
+            Paste format
+          </button>
+          <button id="finish-text" hidden>Done editing</button>
+        </div>
         <div id="preview-scroll"><div id="sheets"></div></div>
       </section>
       <aside class="inspector">
@@ -150,6 +270,147 @@
       <div class="dialog-actions">
         <button id="confirm-cancel">Cancel</button
         ><button id="confirm-ok" class="primary">Continue</button>
+      </div>
+    </dialog>
+    <dialog id="shortcut-dialog" class="wide-dialog">
+      <h2>Make the keyboard yours</h2>
+      <p>
+        Click a shortcut, then press the keys you want. Ctrl on Windows and ⌘ on
+        Mac are interchangeable. Clear a field to leave it unassigned.
+      </p>
+      <div id="shortcut-fields" class="shortcut-fields"></div>
+      <p id="shortcut-error" class="form-error" role="alert"></p>
+      <p class="small-help">
+        Formatting: Ctrl/⌘+B, I, U · copy format: Ctrl/⌘+Shift+C · paste format:
+        Ctrl/⌘+Shift+V. Enter or Shift+Enter starts a new line. Browser
+        shortcuts stay available.
+      </p>
+      <div class="dialog-actions">
+        <button id="shortcut-reset">Reset defaults</button
+        ><button id="shortcut-cancel">Cancel</button
+        ><button id="shortcut-save" class="primary">Save shortcuts</button>
+      </div>
+    </dialog>
+    <dialog id="cloud-dialog" class="wide-dialog">
+      <div class="panel-heading">
+        <h2>Your cloud books</h2>
+        <button id="cloud-close" aria-label="Close cloud books">×</button>
+      </div>
+      <p class="small-help">
+        Full projects and original images save automatically to the same
+        Firebase project as Ans Key. Your device draft keeps working offline.
+      </p>
+      <div id="cloud-account" class="ai-account"></div>
+      <div id="cloud-login" hidden>
+        <button id="cloud-google">Sign in with Google</button>
+        <div class="field-pair">
+          <label
+            >Email<input
+              id="cloud-email"
+              type="email"
+              autocomplete="username" /></label
+          ><label
+            >Password<input
+              id="cloud-password"
+              type="password"
+              autocomplete="current-password"
+          /></label>
+        </div>
+        <button id="cloud-email-signin">Sign in with Polymath account</button>
+      </div>
+      <div class="dialog-actions">
+        <button id="cloud-save-now" class="primary">Save now</button
+        ><button id="cloud-save-copy">Save as a new cloud book</button
+        ><button id="cloud-refresh">Refresh books</button
+        ><button id="cloud-signout" hidden>Sign out</button>
+      </div>
+      <p id="cloud-message" role="status"></p>
+      <div id="cloud-list" class="cloud-list"></div>
+    </dialog>
+    <dialog id="table-dialog">
+      <h2>Insert a table</h2>
+      <p>Double-click any cell to type. Use Tab to move between cells.</p>
+      <div class="field-pair">
+        <label
+          >Rows<input
+            id="table-rows"
+            type="number"
+            value="3"
+            min="1"
+            max="50" /></label
+        ><label
+          >Columns<input
+            id="table-cols"
+            type="number"
+            value="3"
+            min="1"
+            max="12"
+        /></label>
+      </div>
+      <div class="dialog-actions">
+        <button id="table-cancel">Cancel</button
+        ><button id="table-insert" class="primary">Insert table</button>
+      </div>
+    </dialog>
+    <dialog id="ai-dialog" class="wide-dialog ai-dialog">
+      <div class="panel-heading">
+        <h2>AI answer studio</h2>
+        <button id="ai-close" aria-label="Close AI tools">×</button>
+      </div>
+      <p class="small-help">
+        Reads the current page, including question parts, tables, pictures and
+        existing answers. Uses the Polymath arithmetic and unitary method.
+      </p>
+      <div id="ai-account" class="ai-account"></div>
+      <div id="ai-login" hidden>
+        <button id="ai-google">Sign in with Google</button>
+        <div class="field-pair">
+          <label
+            >Email<input
+              id="ai-email"
+              type="email"
+              autocomplete="username" /></label
+          ><label
+            >Password<input
+              id="ai-password"
+              type="password"
+              autocomplete="current-password"
+          /></label>
+        </div>
+        <button id="ai-email-signin">Sign in with Polymath account</button>
+      </div>
+      <div class="field-pair">
+        <label
+          >Tool<select id="ai-task">
+            <option value="answers">Answers &amp; workings</option>
+            <option value="explain">Teaching explanation</option>
+            <option value="check">Check question &amp; answers</option>
+            <option value="habits">Suggest Math Habits</option>
+          </select></label
+        ><label>Focus<select id="ai-focus"></select></label>
+      </div>
+      <label
+        >Teacher instructions<textarea
+          id="ai-guidance"
+          rows="3"
+          placeholder="Preferred methods, answer style or other instructions…"
+        ></textarea>
+      </label>
+      <details>
+        <summary>What the AI will read</summary>
+        <pre id="ai-context" class="ai-context"></pre>
+        <div id="ai-images" class="ai-images"></div>
+      </details>
+      <div class="dialog-actions">
+        <button id="ai-cancel" hidden>Cancel generation</button
+        ><button id="ai-generate" class="primary">Generate</button>
+      </div>
+      <p id="ai-status" role="status"></p>
+      <div id="ai-output"></div>
+      <div id="ai-insert-actions" class="dialog-actions" hidden>
+        <button id="ai-copy">Copy result</button
+        ><button id="ai-new-page">Add answer key page</button
+        ><button id="ai-insert" class="primary">Add to current page</button>
       </div>
     </dialog>
     <input

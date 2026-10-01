@@ -17,6 +17,20 @@ import {
   escapeXml,
   buildPdf,
 } from "./core.js";
+import {
+  normaliseRuns,
+  updateTextRuns,
+  sliceRuns,
+  resizeCells,
+  SHORTCUT_ACTIONS,
+  DEFAULT_SHORTCUTS,
+  shortcutFromEvent,
+  shortcutError,
+  cleanShortcuts,
+} from "./formatting.js";
+import { richBox, paintFormat, createRichEditor } from "./rich-editor.js";
+import { createAIStudio } from "./ai-studio.js";
+import { createCloudSync } from "./cloud-sync.js";
 const $ = (id) => document.getElementById(id),
   el = (tag, cls, text) => {
     const n = document.createElement(tag);
@@ -44,6 +58,14 @@ const labelOf = (b) =>
     working: "Working space",
     answer: b.text,
     divider: "Divider",
+    shape: {
+      rectangle: "Rectangle",
+      rounded: "Rounded rectangle",
+      circle: "Circle",
+      ellipse: "Ellipse",
+      line: "Line",
+    }[b.kind],
+    table: `${b.rows} × ${b.cols} table`,
   })[b.type];
 const pageOf = (id) =>
   project.pages.find((p) => p.blocks.some((b) => b.id === id));
@@ -98,6 +120,7 @@ function redo() {
   restore(s);
 }
 function scheduleSave() {
+  cloudSync?.schedule();
   clearTimeout(saveTimer);
   $("save-status").textContent = "Saving…";
   saveTimer = setTimeout(saveDraft, 500);
@@ -194,8 +217,62 @@ function createBlock(b, fragment = null) {
   n.setAttribute("aria-label", `${b.type}: ${labelOf(b)}`);
   if (b.type === "text") {
     n.classList.add(b.style || "body");
-    n.style.textAlign = b.align || "left";
-    n.textContent = fragment ?? b.text;
+    const data = fragment || {
+      text: b.text,
+      runs: b.runs,
+      start: 0,
+      end: b.text.length,
+    };
+    if (b.part)
+      n.append(el("span", "part-label", data.start ? "" : `(${b.part})`));
+    n.append(
+      richBox(b, data.text, data.runs, { start: data.start, end: data.end }),
+    );
+  }
+  if (b.type === "shape") {
+    n.style.width = b.w + "px";
+    n.style.height = b.height + "px";
+    n.innerHTML = shapeSvg(b);
+  }
+  if (b.type === "table") {
+    n.style.width = (b.w || CONTENT_W) + "px";
+    const table = el("table", "worksheet-table");
+    table.style.setProperty("--table-border", b.borderColor);
+    table.style.setProperty("--table-line", b.borderWidth + "px");
+    paintFormat(table, { ...b, underline: false });
+    const from = fragment?.rowStart ?? 0,
+      to = fragment?.rowEnd ?? b.rows;
+    const tableRows = fragment?.tableRows
+      ? [...fragment.tableRows]
+      : Array.from({ length: to - from }, (_, i) => ({ index: from + i }));
+    if ((fragment?.repeatHeader ?? from > 0) && b.headerRow)
+      tableRows.unshift({ index: 0 });
+    const body = el("tbody");
+    for (const rowData of tableRows) {
+      const r = rowData.index;
+      const row = el("tr");
+      if (b.headerRow && r === 0) row.classList.add("table-header");
+      for (let c = 0; c < b.cols; c++) {
+        const cell = b.cells[r][c],
+          td = el("td");
+        td.style.height = b.rowHeight + "px";
+        td.style.padding = b.cellPadding + "px";
+        if (cell.fill) td.style.backgroundColor = cell.fill;
+        const data = rowData.cells?.[c] || cell;
+        td.append(
+          richBox({ ...b, ...cell }, data.text, data.runs, {
+            cell: [r, c],
+            start: data.start || 0,
+            end: data.end,
+          }),
+        );
+        row.append(td);
+      }
+      body.append(row);
+    }
+    table.append(body);
+    n.append(table);
+    if (fragment) n.dataset.tableStart = from;
   }
   if (b.type === "habit") {
     n.append(
@@ -228,7 +305,26 @@ function createBlock(b, fragment = null) {
         n.append(el("div", "ruled-line"));
   }
   if (b.type === "answer") {
-    n.append(el("span", "", b.text || "Answer"), el("span", "answer-line"));
+    const data = fragment || {
+      text: b.value || "",
+      runs: b.runs,
+      start: 0,
+      end: (b.value || "").length,
+    };
+    const heading = el(
+      "span",
+      "answer-label",
+      (b.text || "Answer") + (b.part ? ` (${b.part})` : ""),
+    );
+    n.append(
+      heading,
+      richBox(b, data.text, data.runs, {
+        key: "value",
+        start: data.start,
+        end: data.end,
+      }),
+    );
+    if (b.showLine !== false) n.append(el("span", "answer-line"));
   }
   if (b.type === "divider") n.append(el("span", "divider-line"));
   if (b.floating) {
@@ -256,17 +352,146 @@ function heightOf(b, fragment) {
   measureBox.replaceChildren(n);
   return n.offsetHeight;
 }
+function shapeSvg(b) {
+  const w = b.w,
+    h = b.height,
+    sw = Number(b.strokeWidth) || 0,
+    inset = sw / 2;
+  const attrs = `fill="${b.fill}" stroke="${b.stroke}" stroke-width="${sw}"`;
+  const kind = b.kind;
+  const graphic =
+    kind === "line"
+      ? `<line x1="${inset}" y1="${h / 2}" x2="${w - inset}" y2="${h / 2}" stroke="${b.stroke}" stroke-width="${sw}"/>`
+      : ["circle", "ellipse"].includes(kind)
+        ? `<ellipse cx="${w / 2}" cy="${h / 2}" rx="${Math.max(0, w / 2 - inset)}" ry="${Math.max(0, h / 2 - inset)}" ${attrs}/>`
+        : `<rect x="${inset}" y="${inset}" width="${Math.max(0, w - sw)}" height="${Math.max(0, h - sw)}" rx="${kind === "rounded" ? Math.min(b.radius, w / 2, h / 2) : 0}" ${attrs}/>`;
+  return `<svg class="shape-art" xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 ${w} ${h}" aria-hidden="true">${graphic}</svg>`;
+}
 function textFragments(b) {
-  const size = project.fontSize,
-    ctx = document.createElement("canvas").getContext("2d");
-  ctx.font = `${b.style === "heading" ? "700" : "400"} ${size}px Arial`;
-  const w = CONTENT_W - (b.style === "prompt" ? 16 : 0);
-  const lines = wrapText(b.text, w, (t) => ctx.measureText(t).width);
-  const max = Math.floor((CONTENT_H - 4) / (size * 1.6));
-  if (lines.length <= max) return [null];
-  const out = [];
-  for (let i = 0; i < lines.length; i += max)
-    out.push(lines.slice(i, i + max).join("\n"));
+  if (heightOf(b) <= CONTENT_H) return [null];
+  const out = [],
+    text = b.type === "answer" ? b.value || "" : b.text,
+    runs = normaliseRuns(text, b.runs);
+  let start = 0;
+  while (start < text.length) {
+    let lo = start + 1,
+      hi = text.length,
+      end = lo;
+    while (lo <= hi) {
+      const mid = Math.floor((lo + hi) / 2),
+        fragment = {
+          text: text.slice(start, mid),
+          runs: sliceRuns(runs, start, mid),
+          start,
+          end: mid,
+        };
+      if (heightOf(b, fragment) <= CONTENT_H - 4) {
+        end = mid;
+        lo = mid + 1;
+      } else hi = mid - 1;
+    }
+    if (end < text.length) {
+      const boundary =
+        Math.max(
+          text.lastIndexOf(" ", end - 1),
+          text.lastIndexOf("\n", end - 1),
+        ) + 1;
+      if (boundary > start && end - boundary < 100) end = boundary;
+    }
+    out.push({
+      text: text.slice(start, end),
+      runs: sliceRuns(runs, start, end),
+      start,
+      end,
+    });
+    start = end;
+  }
+  return out;
+}
+function tableFragments(b) {
+  const logical = [],
+    out = [];
+  const headerH = b.headerRow ? heightOf(b, { rowStart: 0, rowEnd: 1 }) : 0;
+  const repeatHeader = headerH < CONTENT_H / 3;
+  const available =
+    CONTENT_H -
+    6 -
+    (repeatHeader ? headerH : 0) -
+    2 * b.cellPadding -
+    2 * b.borderWidth;
+  for (let r = 0; r < b.rows; r++) {
+    if (
+      heightOf(b, { rowStart: r, rowEnd: r + 1 }) <=
+      CONTENT_H - 6 - (r > 0 && repeatHeader ? headerH : 0)
+    ) {
+      logical.push({ index: r });
+      continue;
+    }
+    const positions = Array(b.cols).fill(0),
+      runs = b.cells[r].map((c) => normaliseRuns(c.text, c.runs));
+    while (positions.some((start, c) => start < b.cells[r][c].text.length)) {
+      const cells = b.cells[r].map((cell, c) => {
+        const start = positions[c],
+          text = cell.text;
+        if (start >= text.length)
+          return { text: "", runs: [], start, end: start };
+        let lo = start + 1,
+          hi = text.length,
+          end = lo;
+        while (lo <= hi) {
+          const mid = Math.floor((lo + hi) / 2),
+            box = richBox(
+              { ...b, ...cell },
+              text.slice(start, mid),
+              sliceRuns(runs[c], start, mid),
+            );
+          box.style.width =
+            Math.max(
+              20,
+              (b.w || CONTENT_W) / b.cols -
+                2 * b.cellPadding -
+                2 * b.borderWidth,
+            ) + "px";
+          measureBox.replaceChildren(box);
+          if (box.offsetHeight <= available) {
+            end = mid;
+            lo = mid + 1;
+          } else hi = mid - 1;
+        }
+        if (end < text.length) {
+          const boundary =
+            Math.max(
+              text.lastIndexOf(" ", end - 1),
+              text.lastIndexOf("\n", end - 1),
+            ) + 1;
+          if (boundary > start && end - boundary < 100) end = boundary;
+        }
+        positions[c] = end;
+        return {
+          text: text.slice(start, end),
+          runs: sliceRuns(runs[c], start, end),
+          start,
+          end,
+        };
+      });
+      logical.push({ index: r, cells });
+    }
+  }
+  for (let start = 0; start < logical.length; ) {
+    const repeated = b.headerRow && repeatHeader && logical[start].index > 0;
+    let end = start + 1;
+    while (
+      end < logical.length &&
+      heightOf(b, {
+        tableRows: logical.slice(start, end + 1),
+        repeatHeader: repeated,
+      }) <=
+        CONTENT_H - 4
+    )
+      end++;
+    out.push({ tableRows: logical.slice(start, end), repeatHeader: repeated });
+    start = end;
+  }
   return out;
 }
 function paginate() {
@@ -277,7 +502,11 @@ function paginate() {
       height = 0;
     pages.push(sheet);
     for (const b of page.blocks.filter((b) => !b.floating)) {
-      for (const fragment of b.type === "text" ? textFragments(b) : [null]) {
+      for (const fragment of ["text", "answer"].includes(b.type)
+        ? textFragments(b)
+        : b.type === "table"
+          ? tableFragments(b)
+          : [null]) {
         let h = heightOf(b, fragment);
         if (h > CONTENT_H && b.type === "image") {
           // fit its display frame, preserve the source image
@@ -319,6 +548,7 @@ function updateZoom() {
   }
 }
 function render({ inspector = true, sheets = true } = {}) {
+  if (sheets) richEditor?.finish({ render: false });
   $("undo").disabled = !history.length;
   $("redo").disabled = !future.length;
   $("page-list").replaceChildren(
@@ -359,6 +589,8 @@ function render({ inspector = true, sheets = true } = {}) {
             working: "···",
             answer: "ANS",
             divider: "—",
+            shape: "◯",
+            table: "▦",
           }[b.type],
         ),
         el("span", "block-description", labelOf(b)),
@@ -427,6 +659,7 @@ function render({ inspector = true, sheets = true } = {}) {
         sheet.append(header, content, footer);
         wrap.append(sheet);
         sheet.onclick = (e) => {
+          if (e.target.closest("[contenteditable=true]")) return;
           const b = e.target.closest(".sheet-block");
           if (b) {
             const item = blockOf(b.dataset.block);
@@ -462,6 +695,7 @@ function render({ inspector = true, sheets = true } = {}) {
     applySelection();
   }
   if (inspector) renderInspector();
+  richEditor?.updateToolbar();
 }
 function field(label, type, value, key, options) {
   const l = el("label", "", label),
@@ -499,7 +733,43 @@ function inspectorUpdate(input) {
           );
   } else if (key === "floating" || key === "ruled" || key === "locked")
     b[key] = input.checked;
-  else b[key] = input.value;
+  else if (key === "headerRow" || key === "showLine") b[key] = input.checked;
+  else if (
+    [
+      "rows",
+      "cols",
+      "strokeWidth",
+      "radius",
+      "borderWidth",
+      "rowHeight",
+      "cellPadding",
+    ].includes(key)
+  ) {
+    const limits = {
+      rows: [1, 50],
+      cols: [1, 12],
+      strokeWidth: [0, 24],
+      radius: [0, 200],
+      borderWidth: [0, 12],
+      rowHeight: [16, 180],
+      cellPadding: [0, 30],
+    };
+    b[key] = clamp(Number(input.value) || 0, ...limits[key]);
+    if (["rows", "cols"].includes(key)) {
+      b[key] = Math.round(b[key]);
+      b.cells = resizeCells(b.cells, b.rows, b.cols);
+    }
+  } else if (key === "text" || key === "value") {
+    if (b.type === "text" || key === "value")
+      b.runs = updateTextRuns(b[key], input.value, b.runs, b);
+    b[key] = input.value;
+  } else b[key] = input.value;
+  if (
+    b.type === "shape" &&
+    b.kind === "circle" &&
+    ["w", "height", "kind"].includes(key)
+  )
+    b.w = b.height = key === "height" ? b.height : b.w;
   if (b.floating) clampBlock(b);
   finishChange({ inspector: false });
 }
@@ -567,11 +837,26 @@ function renderInspector() {
         working: "Working space",
         answer: "Answer line",
         divider: "Divider",
+        shape: "Shape",
+        table: "Table",
       }[b.type],
     ),
   );
   if (b.type === "text")
     root.append(
+      button("Edit on page", () =>
+        richEditor.start(
+          document.querySelector(
+            `.sheet-block[data-block="${b.id}"] .rich-textbox`,
+          ),
+        ),
+      ),
+      el(
+        "p",
+        "small-help",
+        "Double-click the text to edit. Select words to format them. Enter or Shift+Enter adds a new line. Drag the border to move a free text box.",
+      ),
+      field("Part label (optional)", "text", b.part, "part"),
       field("Question / text", "textarea", b.text, "text"),
       field("Text style", "select", b.style, "style", [
         ["body", "Body text"],
@@ -635,11 +920,111 @@ function renderInspector() {
     );
     addCheck(root, "Ruled lines", "ruled", b.ruled);
   }
-  if (b.type === "answer") root.append(field("Label", "text", b.text, "text"));
+  if (b.type === "answer") {
+    root.append(
+      field("Label", "text", b.text, "text"),
+      field("Part label (optional)", "text", b.part, "part"),
+      button("Edit answer on page", () =>
+        richEditor.start(
+          document.querySelector(
+            `.sheet-block[data-block="${b.id}"] .rich-textbox`,
+          ),
+        ),
+      ),
+      field("Answer text", "textarea", b.value || "", "value"),
+    );
+    addCheck(root, "Show answer line", "showLine", b.showLine !== false);
+  }
+  if (["text", "answer", "table"].includes(b.type))
+    root.append(
+      el(
+        "p",
+        "small-help",
+        "Use the formatting bar above the page for font, colour, bold, underline and alignment. Roboto is included; other fonts use your device's installed fonts, with a fallback when unavailable.",
+      ),
+    );
+  if (b.type === "shape") {
+    root.append(
+      field("Shape", "select", b.kind, "kind", [
+        ["rectangle", "Rectangle"],
+        ["rounded", "Rounded rectangle"],
+        ["circle", "Circle"],
+        ["ellipse", "Ellipse"],
+        ["line", "Line"],
+      ]),
+      field(
+        "Fill colour",
+        "color",
+        b.fill === "none" ? "#ffffff" : b.fill,
+        "fill",
+      ),
+      button(b.fill === "none" ? "Restore fill" : "No fill", () =>
+        mutate(() => (b.fill = b.fill === "none" ? "#edf6f6" : "none")),
+      ),
+      field("Line colour", "color", b.stroke, "stroke"),
+      field("Line thickness (px)", "number", b.strokeWidth, "strokeWidth"),
+      field(
+        "Height (mm)",
+        "number",
+        (b.height / PX_PER_MM).toFixed(1),
+        "height",
+      ),
+    );
+    if (b.kind === "rounded")
+      root.append(field("Corner radius (px)", "number", b.radius, "radius"));
+  }
+  if (b.type === "table") {
+    const dimensions = el("div", "field-pair");
+    dimensions.append(
+      field("Rows", "number", b.rows, "rows"),
+      field("Columns", "number", b.cols, "cols"),
+    );
+    root.append(
+      el(
+        "p",
+        "small-help",
+        "Double-click a cell to edit. Tab moves to the next cell. Change rows or columns to resize the table; existing cells are kept.",
+      ),
+      dimensions,
+      field("Table line colour", "color", b.borderColor, "borderColor"),
+      field(
+        "Table line thickness (px)",
+        "number",
+        b.borderWidth,
+        "borderWidth",
+      ),
+      field("Minimum row height (px)", "number", b.rowHeight, "rowHeight"),
+      field("Cell padding (px)", "number", b.cellPadding, "cellPadding"),
+    );
+    addCheck(root, "Header row", "headerRow", b.headerRow);
+    root.append(
+      button("Add row", () =>
+        mutate(() => {
+          if (b.rows < 50) {
+            b.rows++;
+            b.cells = resizeCells(b.cells, b.rows, b.cols);
+          }
+        }),
+      ),
+      button("Add column", () =>
+        mutate(() => {
+          if (b.cols < 12) {
+            b.cols++;
+            b.cells = resizeCells(b.cells, b.rows, b.cols);
+          }
+        }),
+      ),
+    );
+  }
   addCheck(root, "Free placement", "floating", b.floating, () =>
     makeFree([b.id], !b.floating),
   );
-  if (b.type === "image" || b.floating) {
+  if (
+    b.type === "image" ||
+    b.type === "table" ||
+    b.type === "shape" ||
+    b.floating
+  ) {
     root.append(
       field(
         "Width (mm)",
@@ -763,7 +1148,9 @@ function makeFree(ids, on = true) {
     on &&
     ids.some((id) => {
       const b = blockOf(id);
-      return b?.type === "text" && heightOf(b) > CONTENT_H;
+      return (
+        ["text", "answer", "table"].includes(b?.type) && heightOf(b) > CONTENT_H
+      );
     })
   ) {
     toast(
@@ -974,9 +1361,164 @@ function addBlock(b) {
   });
   return b;
 }
+function insertPart(type, all = false) {
+  const used = currentPage()
+    .blocks.filter((b) => b.type === type)
+    .map((b) => b.part);
+  const parts = all
+    ? ["a", "b", "c"]
+    : [
+        "abcdefghijklmnopqrstuvwxyz".split("").find((p) => !used.includes(p)) ||
+          String(used.length + 1),
+      ];
+  mutate(() => {
+    const blocks = parts.map((part) =>
+      makeBlock(type, type === "text" ? { part, text: "" } : { part }),
+    );
+    currentPage().blocks.push(...blocks);
+    selected = [blocks[0].id];
+  });
+}
+function insertAction(action) {
+  richEditor.finish();
+  if (action === "text") {
+    const b = addBlock(
+      makeBlock("text", { floating: true, w: 320, x: 40, y: nextFreeY() }),
+    );
+    richEditor.start(
+      document.querySelector(
+        `.sheet-block[data-block="${b.id}"] .rich-textbox`,
+      ),
+    );
+  } else if (action === "table") $("table-dialog").showModal();
+  else if (action === "image") $("add-image").click();
+  else if (action === "habit") $("add-habit").click();
+  else if (action === "answer") addBlock(makeBlock("answer"));
+  else if (action === "questionPart" || action === "answerPart")
+    insertPart(action === "questionPart" ? "text" : "answer");
+  else if (
+    ["rectangle", "rounded", "circle", "ellipse", "line"].includes(action)
+  ) {
+    const circle = action === "circle";
+    addBlock(
+      makeBlock("shape", {
+        kind: action,
+        w: circle ? 120 : 240,
+        height: circle ? 120 : action === "line" ? 24 : 100,
+        x: 40,
+        y: nextFreeY(),
+      }),
+    );
+  }
+}
+function setupInsertTools() {
+  $("add-textbox").onclick = () => insertAction("text");
+  $("add-question-parts").onclick = () => insertPart("text", true);
+  $("add-answer-parts").onclick = () => insertPart("answer", true);
+  $("add-table").onclick = () => insertAction("table");
+  $("add-shape").onclick = () =>
+    ($("shape-palette").hidden = !$("shape-palette").hidden);
+  for (const b of document.querySelectorAll("[data-shape]"))
+    b.onclick = () => {
+      insertAction(b.dataset.shape);
+      $("shape-palette").hidden = true;
+    };
+  $("table-cancel").onclick = () => $("table-dialog").close();
+  $("table-insert").onclick = () => {
+    const rows = Math.round(clamp(Number($("table-rows").value) || 3, 1, 50)),
+      cols = Math.round(clamp(Number($("table-cols").value) || 3, 1, 12));
+    $("table-dialog").close();
+    addBlock(
+      makeBlock("table", { rows, cols, cells: resizeCells([], rows, cols) }),
+    );
+  };
+}
+function setupShortcuts() {
+  let draft;
+  function paint() {
+    $("shortcut-fields").replaceChildren();
+    for (const [action, label] of Object.entries(SHORTCUT_ACTIONS)) {
+      const row = el("div", "shortcut-row"),
+        l = el("label", "", label),
+        input = el("input");
+      input.value = draft[action].replace("Mod", "Ctrl/⌘");
+      input.readOnly = true;
+      input.dataset.shortcut = action;
+      input.setAttribute("aria-label", label + " shortcut");
+      input.placeholder = "Unassigned";
+      input.onkeydown = (e) => {
+        if (e.key === "Tab") return;
+        e.preventDefault();
+        if (["Backspace", "Delete"].includes(e.key)) draft[action] = "";
+        else {
+          const value = shortcutFromEvent(e);
+          if (!value) return;
+          draft[action] = value;
+        }
+        input.value = draft[action].replace("Mod", "Ctrl/⌘");
+        $("shortcut-error").textContent = shortcutError(draft);
+      };
+      l.append(input);
+      row.append(
+        l,
+        button("Clear", () => {
+          draft[action] = "";
+          input.value = "";
+          $("shortcut-error").textContent = shortcutError(draft);
+        }),
+      );
+      $("shortcut-fields").append(row);
+    }
+    $("shortcut-error").textContent = "";
+  }
+  $("keyboard-shortcuts").onclick = () => {
+    draft = cleanShortcuts(project.shortcuts);
+    paint();
+    $("shortcut-dialog").showModal();
+  };
+  $("shortcut-cancel").onclick = () => $("shortcut-dialog").close();
+  $("shortcut-reset").onclick = () => {
+    draft = { ...DEFAULT_SHORTCUTS };
+    paint();
+  };
+  $("shortcut-save").onclick = () => {
+    const error = shortcutError(draft);
+    $("shortcut-error").textContent = error;
+    if (error) return;
+    mutate(() => (project.shortcuts = { ...draft }));
+    $("shortcut-dialog").close();
+    toast("Keyboard shortcuts saved with this book.");
+  };
+  document.addEventListener("keydown", (e) => {
+    if (
+      e.defaultPrevented ||
+      e.repeat ||
+      e.isComposing ||
+      window.BookTouchup?.isOpen() ||
+      e.target.closest("input,textarea,select,[contenteditable=true],dialog")
+    )
+      return;
+    const shortcut = shortcutFromEvent(e);
+    if (!shortcut) return;
+    const action = Object.keys(SHORTCUT_ACTIONS).find(
+      (a) => project.shortcuts?.[a] === shortcut,
+    );
+    if (action) {
+      e.preventDefault();
+      insertAction(action);
+    }
+  });
+}
 function startDrag(e) {
   const n = e.target.closest(".sheet-block");
-  if (!n || e.button !== 0 || window.BookTouchup?.isOpen()) return;
+  if (
+    !n ||
+    e.button !== 0 ||
+    e.detail > 1 ||
+    e.target.closest("[contenteditable=true]") ||
+    window.BookTouchup?.isOpen()
+  )
+    return;
   const id = n.dataset.block,
     b = blockOf(id);
   if (!b.floating || b.locked) return;
@@ -1048,10 +1590,17 @@ window.addEventListener("pointermove", (e) => {
             b.naturalHeight
           : CONTENT_W;
     b.w = clamp(raw, 40, Math.min(CONTENT_W, maxByHeight));
+    if (b.type === "shape")
+      b.height =
+        b.kind === "circle"
+          ? b.w
+          : clamp(base.h + (top ? -dy : dy), 20, CONTENT_H);
     const h =
       b.type === "image"
         ? (b.w * b.naturalHeight) / b.naturalWidth + (b.caption ? 28 : 0)
-        : heightOf(b);
+        : b.type === "shape"
+          ? b.height
+          : heightOf(b);
     b.x = base.x + (left ? base.w - b.w : 0);
     b.y = base.y + (top ? base.h - h : 0);
     clampBlock(b);
@@ -1082,6 +1631,10 @@ window.addEventListener("pointermove", (e) => {
       n.style.left = item.x + "px";
       n.style.top = item.y + "px";
       n.style.width = item.w + "px";
+      if (item.type === "shape") {
+        n.style.height = item.height + "px";
+        n.querySelector("svg").outerHTML = shapeSvg(item);
+      }
       const img = n.querySelector("img");
       if (img)
         img.style.height =
@@ -1141,13 +1694,28 @@ function openContext(e, id) {
         () => downloadData(b.originalSrc, b.name || "original.png"),
       ],
     );
-  if (b.type === "text" || b.type === "habit")
+  if (
+    b.type === "text" ||
+    b.type === "answer" ||
+    b.type === "table" ||
+    b.type === "habit"
+  )
     entries.push([
       "Edit text",
       () => {
-        $("inspector-content").querySelector("textarea,input")?.focus();
+        const node = document.querySelector(
+          `.sheet-block[data-block="${b.id}"] .rich-textbox`,
+        );
+        if (node) richEditor.start(node);
+        else $("inspector-content").querySelector("textarea,input")?.focus();
       },
     ]);
+  if (["text", "image", "answer", "table"].includes(b.type))
+    entries.push(["AI answers & workings", () => aiStudio.open(id)]);
+  entries.push(
+    ["Copy formatting", () => richEditor.copyFormat()],
+    ["Paste formatting", () => richEditor.pasteFormat()],
+  );
   entries.push(
     [
       b.floating ? "Return to text flow" : "Free placement",
@@ -1304,7 +1872,7 @@ document.addEventListener("paste", (e) => {
     addFiles(files);
     return;
   }
-  if (e.target.closest("input,textarea,[contenteditable]")) return;
+  if (e.target.closest("input,textarea,select,[contenteditable=true]")) return;
   const text = e.clipboardData?.getData("text/plain");
   if (text?.trim()) {
     e.preventDefault();
@@ -1472,7 +2040,9 @@ $("new-project").onclick = async () => {
   )
     return;
   checkpoint();
+  const shortcuts = project.shortcuts;
   project = blankProject();
+  project.shortcuts = shortcuts;
   activePage = project.pages[0].id;
   selected = [];
   syncSettings();
@@ -1518,20 +2088,27 @@ $("load-example").onclick = async () => {
   )
     return;
   checkpoint();
+  const shortcuts = project.shortcuts;
   project = example();
+  project.shortcuts = shortcuts;
   activePage = project.pages[0].id;
   selected = [];
   syncSettings();
   finishChange();
 };
 document.addEventListener("keydown", (e) => {
-  if (window.BookTouchup?.isOpen()) return;
+  if (
+    e.defaultPrevented ||
+    window.BookTouchup?.isOpen() ||
+    e.target.closest("dialog")
+  )
+    return;
   if (e.key === "Escape") {
     menu.hidden = true;
     select(null);
     return;
   }
-  if (e.target.closest("input,textarea,[contenteditable]")) return;
+  if (e.target.closest("input,textarea,select,[contenteditable=true]")) return;
   const command = e.ctrlKey || e.metaKey;
   if (command && e.key.toLowerCase() === "z") {
     e.preventDefault();
@@ -1582,8 +2159,24 @@ document.addEventListener("keydown", (e) => {
 });
 // Export the actual laid-out page. Text is placed from browser line positions,
 // and each image uses its untouched embedded source, including in SVG exports.
-let logoData;
+let logoData, fontData;
 async function ensureImages() {
+  richEditor.finish();
+  await document.fonts.ready;
+  if (!fontData) {
+    fontData = await Promise.all(
+      ["400-normal", "700-normal", "400-italic", "700-italic"].map(
+        async (variant) => {
+          const data = await fileData(
+            await (
+              await fetch(`assets/fonts/roboto-latin-${variant}.woff2`)
+            ).blob(),
+          );
+          return `@font-face{font-family:Roboto;font-style:${variant.endsWith("italic") ? "italic" : "normal"};font-weight:${variant.startsWith("700") ? "700" : "400"};src:url(${data}) format('woff2');}`;
+        },
+      ),
+    );
+  }
   await Promise.all(
     Array.from(document.querySelectorAll(".worksheet img")).map((img) =>
       img.decode().catch(() => {}),
@@ -1607,12 +2200,13 @@ function pageSvg(sheet) {
     };
   };
   const ctx = document.createElement("canvas").getContext("2d");
-  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_W}" height="${PAGE_H}" viewBox="0 0 ${PAGE_W} ${PAGE_H}"><rect width="100%" height="100%" fill="white"/>`;
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${PAGE_W}" height="${PAGE_H}" viewBox="0 0 ${PAGE_W} ${PAGE_H}"><defs><style>${fontData.join("\n")}</style></defs><rect width="100%" height="100%" fill="white"/>`;
   function paint(n) {
     if (
       n.classList.contains("selection-handle") ||
       n.classList.contains("alignment-guide") ||
-      n.classList.contains("empty-page")
+      n.classList.contains("empty-page") ||
+      n.hasAttribute("data-caret")
     )
       return;
     const s = getComputedStyle(n),
@@ -1653,7 +2247,9 @@ function pageSvg(sheet) {
         y2 = y1 + (["Left", "Right"].includes(edge) ? box.h : 0);
       out += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="${color}" stroke-width="${width}"/>`;
     }
-    if (n.tagName === "IMG") {
+    if (n.classList.contains("shape-art")) {
+      out += `<svg x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" viewBox="${n.getAttribute("viewBox")}">${n.innerHTML}</svg>`;
+    } else if (n.tagName === "IMG") {
       const src = n.closest(".worksheet-footer") ? logoData : n.src;
       out += `<image x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" href="${escapeXml(src)}" preserveAspectRatio="xMidYMid meet"/>`;
     } else
@@ -1661,9 +2257,9 @@ function pageSvg(sheet) {
         if (child.nodeType === 1) paint(child);
         else if (child.nodeType === 3 && child.textContent.trim()) {
           const fontSize = parseFloat(s.fontSize),
-            family = "Arial",
+            family = s.fontFamily,
             weight = s.fontWeight;
-          ctx.font = `${weight} ${fontSize}px ${family}`;
+          ctx.font = `${s.fontStyle} ${weight} ${fontSize}px ${family}`;
           const ascent =
             ctx.measureText("Mg").fontBoundingBoxAscent || fontSize * 0.86;
           const text = child.textContent,
@@ -1706,7 +2302,7 @@ function pageSvg(sheet) {
                   : text[i];
           }
           for (const t of runs)
-            out += `<text x="${t.x}" y="${t.y}" font-family="Arial,sans-serif" font-size="${fontSize}" font-weight="${weight}" fill="${s.color}" xml:space="preserve">${escapeXml(t.text)}</text>`;
+            out += `<text x="${t.x}" y="${t.y}" font-family="${escapeXml(family)}" font-size="${fontSize}" font-weight="${weight}" font-style="${s.fontStyle}" text-decoration="${s.textDecorationLine}" fill="${s.color}" xml:space="preserve">${escapeXml(t.text)}</text>`;
         }
       }
     if (contentClip) out += "</g>";
@@ -1800,7 +2396,75 @@ $("print").onclick = async () => {
   await ensureImages();
   window.print();
 };
+const richEditor = createRichEditor({
+  fixLayout: (b) => {
+    if (
+      b.floating &&
+      ["text", "answer", "table"].includes(b.type) &&
+      heightOf(b) > CONTENT_H
+    ) {
+      b.floating = false;
+      toast("Long text moved into page flow so every line is included.");
+    } else if (b.floating) clampBlock(b);
+  },
+  project: () => project,
+  selected: () => selected,
+  block: blockOf,
+  select,
+  mutate,
+  checkpoint,
+  save: scheduleSave,
+  render,
+  toast,
+  undo,
+  redo,
+});
+const aiStudio = createAIStudio({
+  project: () => project,
+  page: currentPage,
+  block: blockOf,
+  selected: () => selected,
+  finishText: () => richEditor.finish(),
+  mutate,
+  insertBlocks: (blocks, newPage, pageId) =>
+    mutate(() => {
+      let page = project.pages.find((p) => p.id === pageId);
+      if (newPage) {
+        page = { id: uid(), blocks: [] };
+        project.pages.push(page);
+      }
+      page.blocks.push(...blocks);
+      activePage = page.id;
+      selected = blocks.length ? [blocks[0].id] : [];
+    }),
+  select,
+  toast,
+  pageImage: async (pageId) => {
+    await ensureImages();
+    return Array.from(
+      document.querySelectorAll(`.worksheet[data-page="${pageId}"]`),
+    ).map(pageSvg);
+  },
+});
+const cloudSync = createCloudSync({
+  project: () => project,
+  finishText: () => richEditor.finish(),
+  saveDevice: saveDraft,
+  mutate,
+  confirm: confirmAction,
+  openProject: (value) => {
+    checkpoint();
+    project = validateProject(value);
+    activePage = project.pages[0].id;
+    selected = [];
+    syncSettings();
+    finishChange();
+  },
+});
+setupInsertTools();
+setupShortcuts();
 await loadDraft();
+await document.fonts.ready;
 syncSettings();
 render();
 $("save-status").textContent = "Draft saved on this device";
@@ -1814,3 +2478,5 @@ window.BookStudio = {
     })),
   exportPages,
 };
+
+cloudSync.start();
