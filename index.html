@@ -1,0 +1,883 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#239ba5" />
+    <title>Polymath Book Studio</title>
+    <link rel="icon" href="assets/logo.png" />
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="cer-touchup.js"></script>
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <img src="assets/logo.png" alt="Polymath Learning Centre" />
+        <div>
+          <h1>Book Studio</h1>
+          <span>Make room for better thinking.</span>
+        </div>
+      </div>
+      <div class="header-actions">
+        <span id="save-status" role="status">Loading your draft…</span
+        ><button id="undo" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button
+        ><button id="redo" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">
+          ↷</button
+        ><button id="export-project">Save project</button
+        ><button id="import-project">Open project</button
+        ><button id="print" class="primary">Print / PDF</button>
+      </div>
+    </header>
+    <main class="studio">
+      <aside class="composer">
+        <div class="panel-heading">
+          <span class="eyebrow">YOUR BOOK</span
+          ><button id="add-page" class="mini">+ Page</button>
+        </div>
+        <div
+          id="page-list"
+          class="page-list"
+          aria-label="Worksheet pages"
+        ></div>
+        <details class="settings" open>
+          <summary>Page details</summary>
+          <div class="setting-grid">
+            <label class="wide"
+              >Book title<input id="book-title" maxlength="100"
+            /></label>
+            <label>Year level<input id="level" maxlength="30" /></label
+            ><label>Subject<input id="subject" maxlength="40" /></label>
+            <label
+              >First page no.<input
+                id="page-number"
+                type="number"
+                min="1"
+                max="9999" /></label
+            ><label
+              >Text size<select id="font-size">
+                <option value="13">10 pt</option>
+                <option value="14">10.5 pt</option>
+                <option value="15">11.25 pt</option>
+                <option value="16">12 pt</option>
+                <option value="18">13.5 pt</option>
+                <option value="20">15 pt</option>
+              </select></label
+            >
+          </div>
+        </details>
+        <section class="add-section">
+          <span class="eyebrow">ADD TO THIS PAGE</span>
+          <p class="small-help">
+            Paste text or an image. Each item becomes a block you can move and
+            edit.
+          </p>
+          <textarea
+            id="paste-input"
+            rows="5"
+            placeholder="Paste your question here…"
+            aria-label="Text to add to worksheet"
+          ></textarea>
+          <button id="add-text" class="full primary">+ Add text</button>
+          <div class="button-grid">
+            <button id="add-image">+ Image</button
+            ><button id="add-habit">+ Math Habit</button
+            ><button id="add-working">+ Working space</button
+            ><button id="add-answer">+ Answer line</button
+            ><button id="add-divider">+ Divider</button
+            ><button id="add-hexagon">+ Dot diagram</button>
+          </div>
+          <div
+            id="drop-zone"
+            tabindex="0"
+            role="button"
+            aria-label="Upload or paste an image"
+          >
+            Drop images here, or click to upload<span
+              >PNG, JPG, WEBP, GIF or SVG</span
+            >
+          </div>
+        </section>
+        <section class="elements-section">
+          <div class="panel-heading">
+            <span class="eyebrow">ELEMENTS</span><span id="block-count"></span>
+          </div>
+          <div id="block-list"></div>
+        </section>
+        <div class="composer-bottom">
+          <button id="load-example">Example page</button
+          ><button id="new-project">New book</button>
+        </div>
+      </aside>
+      <section class="preview-panel" aria-label="Live worksheet preview">
+        <div class="preview-toolbar">
+          <div>
+            <span class="eyebrow">LIVE PREVIEW</span
+            ><span id="sheet-count"></span>
+          </div>
+          <div class="preview-controls">
+            <label class="snap-toggle"
+              ><input id="snap-grid" type="checkbox" checked /> Snap</label
+            ><button id="preview-only">Focus view</button
+            ><label
+              >Zoom<select id="zoom">
+                <option value="fit">Fit</option>
+                <option value="0.65">65%</option>
+                <option value="0.85">85%</option>
+                <option value="1">100%</option>
+                <option value="1.25">125%</option>
+              </select></label
+            ><button id="export-pdf">Download PDF</button
+            ><button id="export-png">PNG</button
+            ><button id="export-svg">SVG</button>
+          </div>
+        </div>
+        <div id="preview-scroll"><div id="sheets"></div></div>
+      </section>
+      <aside class="inspector">
+        <span class="eyebrow">EDIT ELEMENT</span>
+        <div id="inspector-content">
+          <div class="empty-state">
+            Select a block in the preview or the Elements list to edit it.
+          </div>
+        </div>
+      </aside>
+    </main>
+    <div id="toast" role="status" aria-live="polite"></div>
+    <dialog id="confirm-dialog">
+      <h2 id="confirm-title">Confirm</h2>
+      <p id="confirm-message"></p>
+      <div class="dialog-actions">
+        <button id="confirm-cancel">Cancel</button
+        ><button id="confirm-ok" class="primary">Continue</button>
+      </div>
+    </dialog>
+    <input
+      type="file"
+      id="image-input"
+      accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml"
+      multiple
+      hidden
+    />
+    <input
+      type="file"
+      id="project-input"
+      accept=".json,application/json"
+      hidden
+    />
+    <div
+      class="overlay"
+      id="annotOverlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label="CER image touch-up"
+    >
+      <div class="overlay-card" style="max-width: 96vw; width: auto">
+        <div class="overlay-head">
+          <h3>CER touch-up</h3>
+          <button class="close" onclick="closeAnnotTool()" type="button">
+            ×
+          </button>
+        </div>
+        <div class="overlay-body" style="text-align: center">
+          <div class="annot-tools">
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="erase"
+              title="Paint white over words to erase them — Photoshop style: click a point then Shift-click another to join them with a straight line; Shift-drag locks to horizontal / vertical"
+            >
+              Erase
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              id="annotEraseTo"
+              onclick="annotToggleEraseTo()"
+              title="What Erase, the paint bucket and Delete leave behind: white (for rubbing a word off a scanned question) or transparent (for card art and sprites, which stand on nothing)"
+            >
+              ⬜ Erase to: <b>white</b>
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="paint"
+              title="Paint over with the chosen colour — Photoshop style: click a point then Shift-click another to join them with a straight line; Shift-drag locks to horizontal / vertical"
+            >
+              Paint
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="fill"
+              title="Paint bucket (G) — click inside a shape or area to flood it with the chosen colour. The strip at the bottom of the bucket is the colour that will be poured."
+            >
+              <svg class="annot-bucket" viewBox="0 0 24 26" aria-hidden="true">
+                <g
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.7"
+                  stroke-linejoin="round"
+                  stroke-linecap="round"
+                >
+                  <path
+                    d="M11.2 4.2 4.4 11a1.7 1.7 0 0 0 0 2.4l4.9 4.9a1.7 1.7 0 0 0 2.4 0l6.8-6.8z"
+                  />
+                  <path d="M8.9 6.5 6.4 4" />
+                </g>
+                <path
+                  d="M20.6 12.6s1.9 2.5 1.9 3.8a1.9 1.9 0 1 1-3.8 0c0-1.3 1.9-3.8 1.9-3.8z"
+                  class="annot-bucket-paint"
+                />
+                <rect
+                  x="2"
+                  y="22.2"
+                  width="20"
+                  height="3.4"
+                  rx="1.7"
+                  class="annot-bucket-paint"
+                />
+              </svg>
+              Fill
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="clone"
+              title="Clone stamp (S): click to set a source point, then drag to copy that part of the picture elsewhere. Alt+click to re-set the source."
+            >
+              🧬 Clone
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="history"
+              title="History brush (Y) — brush the ORIGINAL picture back wherever you drag, undoing your edits by hand, one stroke at a time"
+            >
+              History
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="select"
+              title="Rectangle select (M): drag a box around an area, then fill it, move it, or use AI content-aware fill"
+            >
+              ⬚ Select
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="lasso"
+              title="Lasso select (L): draw freehand around an area, then fill it, move it, or use AI content-aware fill"
+            >
+              ➰ Lasso
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="wand"
+              title="Magic wand (W): click a colour to select every pixel like it. Alt+click selects that colour across the WHOLE picture, not just the patch you clicked. Use the ± slider to widen or tighten what counts as the same colour."
+            >
+              Wand
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="move"
+              title="Move (V): drag inside a selection to cut it out and drop it anywhere — hold Alt to copy instead of cut. Also drags text labels around."
+            >
+              Move
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="rotate"
+              title="Rotate (R): drag on the image to turn it — hold Shift to snap to 15°. With an area selected it turns just that object; with nothing selected it straightens the whole picture. Use 📐 Straighten to trace a crooked edge and level it automatically."
+            >
+              Rotate
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="scale"
+              title="Resize / free transform (F): drag the handles round the box to make the selected object bigger or smaller — corners resize both ways, edges one way, and the opposite corner stays put. Drag inside the box to move it. Shift swaps between keeping the shape and stretching it freely. With nothing selected it resizes the whole picture."
+            >
+              Resize
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="skew"
+              title="Skew (K): drag sideways to slant sideways, up/down to slant up/down — for objects photographed at an angle. Works on the selected area, or the whole picture if nothing is selected."
+            >
+              Skew
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="line"
+              title="Drag to draw a straight label line (U) — hold Shift to snap to 45° angles"
+            >
+              Line
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              onclick="annotCleanPaper()"
+              title="Clean paper: snaps the near-white background to pure white, taking out the faint diagonal weave an AI re-render leaves behind, a grey scan background and a faint printed watermark. The drawing is untouched — it refuses outright on a photo or on artwork with no white page. ↶ Undo puts it back."
+            >
+              Clean paper
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              onclick="annotPasteFromClipboard()"
+              title="Paste a picture in from the clipboard (Ctrl+V / ⌘V) — a screenshot, a photo, a figure from another question. It lands scaled to fit, with the resize handles already on it: drag a corner to size it, drag the middle to move it, then ✓ Apply."
+            >
+              Paste picture
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="text"
+              title="Click to drop a text label (T)"
+            >
+              Text
+            </button>
+            <label
+              style="
+                font-size: 0.8rem;
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+              "
+              >Colour
+              <input
+                type="color"
+                id="annotColor"
+                value="#e23c3c"
+                oninput="_annotSyncControls()"
+                style="
+                  width: 34px;
+                  height: 28px;
+                  padding: 0;
+                  border: 1px solid var(--border);
+                  border-radius: 6px;
+                "
+            /></label>
+            <label
+              style="
+                font-size: 0.8rem;
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+              "
+              title="Brush size in image pixels — set to 1 to paint a single pixel. The ring around your pointer on the picture IS this size, drawn at the current zoom. [ and ] change it, and you can scroll your mouse wheel over the slider."
+              >Brush
+              <input
+                type="range"
+                id="annotSize"
+                min="1"
+                max="60"
+                value="6"
+                oninput="_annotSyncControls()"
+              /><span
+                id="annotSizeVal"
+                style="min-width: 30px; font-variant-numeric: tabular-nums"
+                >6&nbsp;px</span
+              ></label
+            >
+            <label
+              style="
+                font-size: 0.8rem;
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+              "
+              title="How close a colour has to be to count as the same one — used by the magic wand and the paint bucket. Scroll your mouse wheel over the slider to change it."
+              >Match ±
+              <input
+                type="range"
+                id="annotTol"
+                min="0"
+                max="120"
+                value="32"
+                oninput="_annotSyncControls()"
+              /><span
+                id="annotTolVal"
+                style="min-width: 26px; font-variant-numeric: tabular-nums"
+                >32</span
+              ></label
+            >
+            <span
+              style="width: 1px; height: 20px; background: var(--border)"
+            ></span>
+            <button
+              type="button"
+              class="annot-tool"
+              onclick="annotZoomStep(1/1.3)"
+              title="Zoom out"
+            >
+              ➖
+            </button>
+            <span
+              id="annotZoomVal"
+              style="
+                font-size: 0.78rem;
+                min-width: 44px;
+                text-align: center;
+                font-variant-numeric: tabular-nums;
+              "
+              >100%</span
+            >
+            <button
+              type="button"
+              class="annot-tool"
+              onclick="annotZoomStep(1.3)"
+              title="Zoom in"
+            >
+              ➕
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              onclick="annotZoomFit()"
+              title="Fit the whole image in view"
+            >
+              Fit
+            </button>
+            <button
+              type="button"
+              class="btn btn-outline"
+              style="padding: 5px 10px; font-size: 0.8rem"
+              onclick="annotUndo()"
+            >
+              ↶ Undo
+            </button>
+          </div>
+          <div
+            id="annotSelBar"
+            style="
+              display: none;
+              flex-wrap: wrap;
+              gap: 8px;
+              align-items: center;
+              justify-content: center;
+              margin: 0 auto 12px;
+              padding: 8px 14px;
+              border: 1.5px solid var(--primary, #0b6b4f);
+              background: var(--primary-light, #e8f3ec);
+              border-radius: 10px;
+              max-width: 820px;
+            "
+          >
+            <span
+              style="
+                font-size: 0.8rem;
+                font-weight: 700;
+                color: var(--primary, #0b6b4f);
+              "
+              >Selection:</span
+            ><button
+              class="annot-tool"
+              type="button"
+              onclick="annotCropSelection()"
+            >
+              Crop selection
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              onclick="annotSelDelete()"
+              title="Delete the selected area — it becomes TRANSPARENT, not white or black, and the PNG keeps the hole. With the 🪄 wand, Alt+click a colour first to take that colour across the whole picture, then press this (or the Delete key)."
+            >
+              Delete (transparent)
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              onclick="annotSelFillColour()"
+              title="Fill the selected area with the chosen colour"
+            >
+              Fill colour
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              onclick="annotSelPatchFill()"
+              title="Fill the selected area by extending the surrounding pixels inwards (fast, no AI)"
+            >
+              Fill from surroundings
+            </button>
+
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="move"
+              title="Move (V) — drag inside the selection to cut it out and drop it anywhere; hold Alt to copy instead"
+            >
+              Move it
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="scale"
+              title="Resize (F) — lift this object out and drag the handles to make it bigger or smaller; drag inside the box to move it"
+            >
+              Resize it
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="rotate"
+              title="Rotate (R) — lift this object out and turn it; drag on the image or use the sliders"
+            >
+              Turn it
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="skew"
+              title="Skew (K) — lift this object out and slant it, for something photographed at an angle"
+            >
+              Slant it
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              onclick="annotSelClear()"
+              title="Deselect (Esc)"
+            >
+              ✕ Deselect
+            </button>
+          </div>
+
+          <!-- ✨ Regenerate: type what you want and the AI redraws it. With an area
+           selected only that area may change; with nothing selected the whole
+           picture is redrawn. Either way it is ONE history step, so ↶ Undo puts
+           the picture straight back. -->
+
+          <!-- Rotate / skew panel: appears while a transform is open, disappears on Apply or Cancel. -->
+          <div
+            id="annotXformBar"
+            style="
+              display: none;
+              flex-wrap: wrap;
+              gap: 10px 14px;
+              align-items: center;
+              justify-content: center;
+              margin: 0 auto 12px;
+              padding: 12px 18px;
+              border: 1.5px solid #b45309;
+              background: #fdf4e3;
+              border-radius: 12px;
+              max-width: 880px;
+            "
+          >
+            <span style="font-size: 0.8rem; font-weight: 700; color: #92400e"
+              >Transforming
+              <span id="annotXformScope">the whole picture</span>:</span
+            >
+            <label
+              style="
+                font-size: 0.8rem;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+              "
+              title="Width, as a percentage of the original. Drag the handles round the box for the same thing."
+              >W
+              <input
+                type="number"
+                id="annotXformSxNum"
+                min="5"
+                max="800"
+                step="1"
+                value="100"
+                onchange="annotXformSetScale('sx', this.value)"
+                style="
+                  width: 64px;
+                  padding: 3px 6px;
+                  border: 1px solid var(--border);
+                  border-radius: 6px;
+                  font-size: 0.78rem;
+                  font-variant-numeric: tabular-nums;
+                "
+              />%
+            </label>
+            <label
+              style="
+                font-size: 0.8rem;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+              "
+              title="Height, as a percentage of the original."
+              >H
+              <input
+                type="number"
+                id="annotXformSyNum"
+                min="5"
+                max="800"
+                step="1"
+                value="100"
+                onchange="annotXformSetScale('sy', this.value)"
+                style="
+                  width: 64px;
+                  padding: 3px 6px;
+                  border: 1px solid var(--border);
+                  border-radius: 6px;
+                  font-size: 0.78rem;
+                  font-variant-numeric: tabular-nums;
+                "
+              />%
+            </label>
+            <label
+              style="
+                font-size: 0.8rem;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+              "
+              title="On: width and height stay in step, so the object keeps its shape. Off: stretch it freely. Holding Shift while you drag a handle swaps between the two."
+            >
+              <input
+                type="checkbox"
+                id="annotXformLock"
+                checked
+                onchange="annotXformSetLock(this.checked)"
+                style="width: 15px; height: 15px; cursor: pointer"
+              />
+              Keep shape
+            </label>
+            <span
+              id="annotXformSizePx"
+              style="
+                font-size: 0.75rem;
+                color: #92400e;
+                font-variant-numeric: tabular-nums;
+                min-width: 86px;
+              "
+              >&nbsp;</span
+            >
+            <button
+              type="button"
+              class="annot-tool"
+              onclick="annotXformFlip('x')"
+              title="Mirror left-to-right"
+            >
+              ⇄ Flip
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              onclick="annotXformFlip('y')"
+              title="Mirror top-to-bottom"
+            >
+              ⇅ Flip
+            </button>
+            <span style="width: 1px; height: 20px; background: #e0c9a0"></span>
+            <label
+              style="
+                font-size: 0.8rem;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+              "
+              title="Turn the object. Drag on the image for the same thing — hold Shift there to snap to 15°. Scroll your mouse wheel over the slider for fine steps."
+              >Turn
+              <input
+                type="range"
+                id="annotXformAngle"
+                min="-180"
+                max="180"
+                step="0.5"
+                value="0"
+                oninput="annotXformSet('angle', this.value)"
+                style="width: 150px"
+              />
+              <input
+                type="number"
+                id="annotXformAngleNum"
+                min="-180"
+                max="180"
+                step="0.1"
+                value="0"
+                onchange="annotXformSet('angle', this.value)"
+                style="
+                  width: 66px;
+                  padding: 3px 6px;
+                  border: 1px solid var(--border);
+                  border-radius: 6px;
+                  font-size: 0.78rem;
+                  font-variant-numeric: tabular-nums;
+                "
+              />°
+            </label>
+            <label
+              style="
+                font-size: 0.8rem;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+              "
+              title="Slant sideways — the top leans one way, the bottom the other. This is what fixes a diagram photographed from the side."
+              >Slant&nbsp;↔
+              <input
+                type="range"
+                id="annotXformSkewX"
+                min="-60"
+                max="60"
+                step="0.5"
+                value="0"
+                oninput="annotXformSet('skewX', this.value)"
+                style="width: 110px"
+              />
+              <span
+                id="annotXformSkewXVal"
+                style="min-width: 34px; font-variant-numeric: tabular-nums"
+                >0°</span
+              >
+            </label>
+            <label
+              style="
+                font-size: 0.8rem;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+              "
+              title="Slant up and down — the left edge leans one way, the right edge the other."
+              >Slant&nbsp;↕
+              <input
+                type="range"
+                id="annotXformSkewY"
+                min="-60"
+                max="60"
+                step="0.5"
+                value="0"
+                oninput="annotXformSet('skewY', this.value)"
+                style="width: 110px"
+              />
+              <span
+                id="annotXformSkewYVal"
+                style="min-width: 34px; font-variant-numeric: tabular-nums"
+                >0°</span
+              >
+            </label>
+            <span style="width: 1px; height: 20px; background: #e0c9a0"></span>
+            <button
+              type="button"
+              class="annot-tool"
+              onclick="annotXformNudge(-90)"
+              title="Turn a quarter turn anticlockwise"
+            >
+              ↺ 90°
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              onclick="annotXformNudge(90)"
+              title="Turn a quarter turn clockwise"
+            >
+              ↻ 90°
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              id="annotXformStraightenBtn"
+              onclick="annotXformStraightenStart()"
+              title="Straighten: click this, then drag a line along an edge that should be level (a table rule, the base of a diagram, a line of print) — the picture turns to make it so."
+            >
+              Straighten…
+            </button>
+            <label
+              id="annotXformGrowWrap"
+              style="
+                font-size: 0.8rem;
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+              "
+              title="On: the canvas grows so a turned page keeps all four corners, with white filling the gaps. Off: the picture stays exactly the same size and the corners are cut off."
+            >
+              <input
+                type="checkbox"
+                id="annotXformGrow"
+                checked
+                onchange="annotXformSetGrow(this.checked)"
+                style="width: 15px; height: 15px; cursor: pointer"
+              />
+              Grow to fit
+            </label>
+            <span style="width: 1px; height: 20px; background: #e0c9a0"></span>
+            <span style="display: inline-flex; align-items: center; gap: 8px">
+              <button
+                type="button"
+                class="annot-tool"
+                onclick="annotXformReset()"
+                title="Back to the original size and 0° — nothing resized, turned or slanted"
+              >
+                ⟲ Reset
+              </button>
+              <button
+                type="button"
+                class="btn btn-primary"
+                style="padding: 5px 14px; font-size: 0.8rem"
+                onclick="annotXformApply()"
+                title="Burn the resize / turn into the picture (Enter)"
+              >
+                ✓ Apply
+              </button>
+              <button
+                type="button"
+                class="btn btn-ghost"
+                style="padding: 5px 12px; font-size: 0.8rem"
+                onclick="annotXformCancel()"
+                title="Put the picture back as it was (Esc)"
+              >
+                ✕ Cancel
+              </button>
+            </span>
+          </div>
+          <div id="annotStage">
+            <canvas id="annotCanvas"></canvas
+            ><canvas id="annotSelCanvas"></canvas>
+          </div>
+          <p class="hint">
+            Edit at original resolution. Scroll to zoom; hold Space and drag to
+            pan. E erase · B paint · M select · V move · T text · Ctrl+Z undo.
+            Enter applies a transform; Esc cancels it. Shift-click joins brush
+            points with a straight line. Alt-click sets the clone source.
+          </p>
+        </div>
+        <div class="overlay-foot">
+          <button
+            class="btn btn-ghost"
+            onclick="closeAnnotTool()"
+            type="button"
+          >
+            Cancel
+          </button>
+          <!-- On every picture, not just the Photo Editor's: a diagram worth
+           keeping outside the app is one click, and it never leaves the
+           editor. PNG, so anything cut out to transparent stays transparent. -->
+          <button
+            class="btn btn-outline"
+            onclick="annotDownloadPng()"
+            type="button"
+            title="Save the picture as it stands now to a PNG file. The editor stays open."
+          >
+            Download PNG
+          </button>
+          <button
+            class="btn btn-primary"
+            onclick="applyAnnotTool()"
+            type="button"
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>
