@@ -4,11 +4,17 @@ import {
   PAGE_H,
   CONTENT_W,
   CONTENT_H,
+  CONTENT_X,
+  CONTENT_Y,
   uid,
   clamp,
   clone,
   blankProject,
   makeBlock,
+  pageBlocks,
+  repeatSources,
+  independentCopy,
+  flowBands,
   validateProject,
   validateSvg,
   wrapText,
@@ -50,6 +56,8 @@ let project = blankProject(),
   db,
   renderedSheets = [],
   contextTarget = null;
+let repeatCopiesChanged = false,
+  contextSheetIndex = 0;
 const labelOf = (b) =>
   ({
     text: (b.text || "").slice(0, 55) || "Text",
@@ -176,7 +184,7 @@ function syncSettings() {
     $(id).value = project[key];
   $("snap-grid").checked = project.snap;
 }
-function select(id, extend = false) {
+function select(id, extend = false, pageId) {
   typingGroup = null;
   if (!id) selected = [];
   else if (extend)
@@ -184,7 +192,12 @@ function select(id, extend = false) {
       ? selected.filter((x) => x !== id)
       : [...selected, id];
   else selected = [id];
-  if (id) activePage = pageOf(id).id;
+  if (id)
+    activePage =
+      pageId ||
+      (pageBlocks(project, activePage).some((b) => b.id === id)
+        ? activePage
+        : pageOf(id).id);
   render({ sheets: false });
   applySelection();
 }
@@ -198,10 +211,15 @@ function applySelection() {
   document.querySelectorAll(".selection-handle").forEach((n) => n.remove());
   for (const id of selected) {
     const b = blockOf(id);
-    if (!b || !b.floating || b.locked) continue;
-    const n = document.querySelector(`.sheet-block[data-block="${id}"]`);
-    if (n)
-      for (const corner of ["nw", "ne", "sw", "se"]) {
+    const textBox = ["text", "answer"].includes(b?.type);
+    if (!b || b.locked || (!b.floating && !textBox)) continue;
+    if (!b.floating && heightOf(b) > CONTENT_H) continue;
+    for (const n of document.querySelectorAll(
+      `.sheet-block[data-block="${id}"]`,
+    ))
+      for (const corner of textBox
+        ? ["nw", "n", "ne", "e", "se", "s", "sw", "w"]
+        : ["nw", "ne", "sw", "se"]) {
         const h = el("span", "selection-handle " + corner);
         h.dataset.corner = corner;
         h.setAttribute("aria-hidden", "true");
@@ -215,6 +233,10 @@ function createBlock(b, fragment = null) {
   n.dataset.type = b.type;
   n.tabIndex = 0;
   n.setAttribute("aria-label", `${b.type}: ${labelOf(b)}`);
+  if (["text", "answer"].includes(b.type)) {
+    paintFormat(n, { ...b, underline: false });
+    n.style.lineHeight = b.lineSpacing || 1.6;
+  }
   if (b.type === "text") {
     n.classList.add(b.style || "body");
     const data = fragment || {
@@ -275,11 +297,34 @@ function createBlock(b, fragment = null) {
     if (fragment) n.dataset.tableStart = from;
   }
   if (b.type === "habit") {
-    n.append(
-      el("span", "habit-number", b.number),
-      el("span", "habit-label", "MATH HABIT"),
-      el("span", "habit-title", b.title),
-    );
+    const number = richBox(
+        {
+          ...b,
+          fontSize: b.fontSize || 14,
+          bold: true,
+          color: "#ffffff",
+          align: "center",
+          lineSpacing: b.lineSpacing || 1.35,
+        },
+        b.number,
+        b.numberRuns,
+        { key: "number" },
+      ),
+      title = richBox(
+        { fontSize: 14, bold: true, color: "#203c44", lineSpacing: 1.35, ...b },
+        b.title,
+        b.titleRuns,
+        { key: "title" },
+      );
+    number.classList.add("habit-number");
+    title.classList.add("habit-title");
+    for (const node of [number, title]) {
+      node.dataset.activation = "double";
+      node.title = "Double-click to edit this Math Habit";
+      node.dataset.placeholder = "Double-click to type…";
+      node.tabIndex = -1;
+    }
+    n.append(number, el("span", "habit-label", "MATH HABIT"), title);
   }
   if (b.type === "image") {
     const img = el("img");
@@ -291,6 +336,15 @@ function createBlock(b, fragment = null) {
     n.append(img);
     n.style.width = `${b.w}px`;
     if (b.caption) n.append(el("div", "image-caption", b.caption));
+    if (b.templatePlaceholder) {
+      const placeholder = el(
+        "div",
+        "image-placeholder",
+        "Paste or replace this question image",
+      );
+      placeholder.dataset.editorUi = "true";
+      n.append(placeholder);
+    }
   }
   if (b.type === "working") {
     n.style.height = `${b.height}px`;
@@ -332,12 +386,23 @@ function createBlock(b, fragment = null) {
     n.style.left = `${b.x}px`;
     n.style.top = `${b.y}px`;
     n.style.width = `${b.w || 300}px`;
+    if (["text", "answer"].includes(b.type) && b.boxHeight)
+      n.style.minHeight = b.boxHeight + "px";
     n.style.zIndex = String(
       10 + Math.max(0, pageOf(b.id)?.blocks.indexOf(b) ?? 0),
     );
   }
   if (b.rotation) n.style.transform = `rotate(${b.rotation}deg)`;
   if (b.locked) n.classList.add("locked");
+  if (["text", "answer", "table"].includes(b.type)) {
+    const frame = el("div", "selection-frame");
+    frame.setAttribute("aria-hidden", "true");
+    frame.dataset.editorUi = "true";
+    frame.title = "Click the border to select the whole box. Drag to move.";
+    for (const side of ["n", "e", "s", "w"])
+      frame.append(el("span", "selection-edge " + side));
+    n.append(frame);
+  }
   return n;
 }
 const measureBox = el("div", "worksheet-content measure-box");
@@ -367,8 +432,8 @@ function shapeSvg(b) {
         : `<rect x="${inset}" y="${inset}" width="${Math.max(0, w - sw)}" height="${Math.max(0, h - sw)}" rx="${kind === "rounded" ? Math.min(b.radius, w / 2, h / 2) : 0}" ${attrs}/>`;
   return `<svg class="shape-art" xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 ${w} ${h}" aria-hidden="true">${graphic}</svg>`;
 }
-function textFragments(b) {
-  if (heightOf(b) <= CONTENT_H) return [null];
+function textFragments(b, maxHeight = CONTENT_H) {
+  if (heightOf(b) <= maxHeight) return [null];
   const out = [],
     text = b.type === "answer" ? b.value || "" : b.text,
     runs = normaliseRuns(text, b.runs);
@@ -385,7 +450,7 @@ function textFragments(b) {
           start,
           end: mid,
         };
-      if (heightOf(b, fragment) <= CONTENT_H - 4) {
+      if (heightOf(b, fragment) <= maxHeight - 4) {
         end = mid;
         lo = mid + 1;
       } else hi = mid - 1;
@@ -408,13 +473,13 @@ function textFragments(b) {
   }
   return out;
 }
-function tableFragments(b) {
+function tableFragments(b, maxHeight = CONTENT_H) {
   const logical = [],
     out = [];
   const headerH = b.headerRow ? heightOf(b, { rowStart: 0, rowEnd: 1 }) : 0;
-  const repeatHeader = headerH < CONTENT_H / 3;
+  const repeatHeader = headerH < maxHeight / 3;
   const available =
-    CONTENT_H -
+    maxHeight -
     6 -
     (repeatHeader ? headerH : 0) -
     2 * b.cellPadding -
@@ -422,7 +487,7 @@ function tableFragments(b) {
   for (let r = 0; r < b.rows; r++) {
     if (
       heightOf(b, { rowStart: r, rowEnd: r + 1 }) <=
-      CONTENT_H - 6 - (r > 0 && repeatHeader ? headerH : 0)
+      maxHeight - 6 - (r > 0 && repeatHeader ? headerH : 0)
     ) {
       logical.push({ index: r });
       continue;
@@ -486,7 +551,7 @@ function tableFragments(b) {
         tableRows: logical.slice(start, end + 1),
         repeatHeader: repeated,
       }) <=
-        CONTENT_H - 4
+        maxHeight - 4
     )
       end++;
     out.push({ tableRows: logical.slice(start, end), repeatHeader: repeated });
@@ -494,43 +559,132 @@ function tableFragments(b) {
   }
   return out;
 }
+function syncRepeatCopies(page, sources, count) {
+  for (const source of sources.filter((b) => b.repeatMode === "independent")) {
+    for (let index = 0; index < count; index++) {
+      if (pageOf(source.id).id === page.id && index === 0) continue;
+      if (
+        page.repeatSuppressed?.some(
+          (r) => r.sourceId === source.id && r.sheetIndex === index,
+        )
+      )
+        continue;
+      if (
+        page.blocks.some(
+          (b) => b.repeatedFrom === source.id && b.sheetIndex === index,
+        )
+      )
+        continue;
+      page.blocks.push(
+        independentCopy(source, { blank: true, sheetIndex: index }),
+      );
+      repeatCopiesChanged = true;
+    }
+  }
+}
 function paginate() {
   measureBox.style.fontSize = project.fontSize + "px";
   const pages = [];
   for (const page of project.pages) {
+    const sources = repeatSources(project, page.id);
+    syncRepeatCopies(page, sources, 1);
+    const blocks = pageBlocks(project, page.id),
+      reserved = [
+        ...new Map([...blocks, ...sources].map((b) => [b.id, b])).values(),
+      ]
+        .filter(
+          (b) =>
+            (b.repeatOnPages || b.repeatedFrom) && b.repeatKeepClear !== false,
+        )
+        .map((b) => ({ y: b.y, h: heightOf(b) })),
+      available = flowBands(reserved),
+      bands = available.length ? available : [{ y: 0, height: CONTENT_H }],
+      maxHeight = Math.max(...bands.map((b) => b.height));
     let sheet = { pageId: page.id, items: [] },
-      height = 0;
+      height = 0,
+      bandIndex = 0;
     pages.push(sheet);
-    for (const b of page.blocks.filter((b) => !b.floating)) {
+    for (const b of blocks.filter((b) => !b.floating)) {
       for (const fragment of ["text", "answer"].includes(b.type)
-        ? textFragments(b)
+        ? textFragments(b, maxHeight)
         : b.type === "table"
-          ? tableFragments(b)
+          ? tableFragments(b, maxHeight)
           : [null]) {
         let h = heightOf(b, fragment);
-        if (h > CONTENT_H && b.type === "image") {
+        if (h > maxHeight && b.type === "image") {
           // fit its display frame, preserve the source image
           const captionHeight = h - (b.w * b.naturalHeight) / b.naturalWidth;
           b.w = Math.min(
             b.w,
-            (Math.max(1, CONTENT_H - captionHeight) * b.naturalWidth) /
+            (Math.max(1, maxHeight - captionHeight) * b.naturalWidth) /
               b.naturalHeight,
           );
           h = heightOf(b, fragment);
         }
-        if (height && height + h + 14 > CONTENT_H) {
+        const nextY = height ? height + 14 : 0;
+        let y = Math.max(nextY, bands[bandIndex].y);
+        while (
+          bandIndex < bands.length - 1 &&
+          y + h > bands[bandIndex].y + bands[bandIndex].height
+        ) {
+          bandIndex++;
+          y = Math.max(nextY, bands[bandIndex].y);
+        }
+        if (height && y + h > bands[bandIndex].y + bands[bandIndex].height) {
           sheet = { pageId: page.id, items: [] };
           pages.push(sheet);
           height = 0;
+          bandIndex = 0;
+          y = bands[0].y;
+          while (
+            bandIndex < bands.length - 1 &&
+            y + h > bands[bandIndex].y + bands[bandIndex].height
+          )
+            y = bands[++bandIndex].y;
         }
-        sheet.items.push({ block: b, fragment });
-        height += (height ? 14 : 0) + h;
+        if (h > maxHeight) y = 0;
+        sheet.items.push({
+          block: b,
+          fragment,
+          gap: Math.max(0, y - (height ? height + 14 : 0)),
+        });
+        height = y + h;
       }
     }
-    const floats = page.blocks.filter((b) => b.floating);
-    pages
-      .find((s) => s.pageId === page.id)
-      .items.push(...floats.map((b) => ({ block: b, fragment: null })));
+    const ownSheets = pages.filter((s) => s.pageId === page.id),
+      lastIndex = Math.max(
+        0,
+        ...page.blocks
+          .filter((b) => b.floating && !b.repeatOnPages)
+          .map((b) => b.sheetIndex || 0),
+      );
+    while (ownSheets.length <= lastIndex) {
+      const extra = { pageId: page.id, items: [] };
+      ownSheets.push(extra);
+      pages.push(extra);
+    }
+    syncRepeatCopies(page, sources, ownSheets.length);
+    const floats = page.blocks.filter((b) => b.floating && !b.repeatOnPages);
+    ownSheets.forEach((s, index) => {
+      s.copyIndex = index;
+      const hidden = new Set(
+        (page.repeatSuppressed || [])
+          .filter((r) => r.sheetIndex === index)
+          .map((r) => r.sourceId),
+      );
+      const repeated = sources.filter(
+        (b) =>
+          !hidden.has(b.id) &&
+          (b.repeatMode !== "independent" ||
+            (pageOf(b.id).id === page.id && index === 0)),
+      );
+      s.items.push(
+        ...floats
+          .filter((b) => (b.sheetIndex || 0) === index && !hidden.has(b.id))
+          .map((b) => ({ block: b, fragment: null })),
+        ...repeated.map((b) => ({ block: b, fragment: null })),
+      );
+    });
   }
   measureBox.replaceChildren();
   return pages;
@@ -548,7 +702,10 @@ function updateZoom() {
   }
 }
 function render({ inspector = true, sheets = true } = {}) {
-  if (sheets) richEditor?.finish({ render: false });
+  if (sheets) {
+    richEditor?.finish({ render: false });
+    renderedSheets = paginate();
+  }
   $("undo").disabled = !history.length;
   $("redo").disabled = !future.length;
   $("page-list").replaceChildren(
@@ -570,13 +727,20 @@ function render({ inspector = true, sheets = true } = {}) {
       return n;
     }),
   );
-  $("block-count").textContent = currentPage().blocks.length;
+  $("block-count").textContent = pageBlocks(project, activePage).length;
   $("block-list").replaceChildren(
-    ...currentPage().blocks.map((b) => {
+    ...pageBlocks(project, activePage).map((b) => {
+      const inherited = pageOf(b.id).id !== activePage;
       const n = el(
         "button",
         "block-row" + (selected.includes(b.id) ? " selected" : ""),
       );
+      if (b.repeatOnPages) {
+        n.append(el("span", "repeat-badge", "↻"));
+        n.title =
+          "Repeats from page " +
+          (project.pages.findIndex((p) => p.id === pageOf(b.id).id) + 1);
+      }
       n.dataset.listBlock = b.id;
       n.append(
         el(
@@ -597,14 +761,20 @@ function render({ inspector = true, sheets = true } = {}) {
       );
       n.onclick = (e) => select(b.id, e.shiftKey);
       n.oncontextmenu = (e) => openContext(e, b.id);
-      n.draggable = true;
+      n.draggable = !inherited;
       n.ondragstart = (e) =>
         e.dataTransfer.setData("application/x-book-block", b.id);
       n.ondragover = (e) => e.preventDefault();
       n.ondrop = (e) => {
         e.preventDefault();
         const source = e.dataTransfer.getData("application/x-book-block");
-        if (!source || source === b.id) return;
+        if (
+          !source ||
+          source === b.id ||
+          inherited ||
+          pageOf(source)?.id !== activePage
+        )
+          return;
         mutate(() => {
           const p = pageOf(source),
             from = p.blocks.findIndex((x) => x.id === source),
@@ -620,7 +790,6 @@ function render({ inspector = true, sheets = true } = {}) {
     }),
   );
   if (sheets) {
-    renderedSheets = paginate();
     $("sheet-count").textContent =
       `${renderedSheets.length} A4 ${renderedSheets.length === 1 ? "page" : "pages"}`;
     $("sheets").replaceChildren(
@@ -629,6 +798,7 @@ function render({ inspector = true, sheets = true } = {}) {
           sheet = el("article", "worksheet");
         sheet.dataset.page = s.pageId;
         sheet.dataset.sheet = index;
+        sheet.dataset.copyIndex = s.copyIndex;
         sheet.style.fontSize = project.fontSize + "px";
         const header = el("div", "worksheet-masthead");
         header.append(
@@ -637,7 +807,11 @@ function render({ inspector = true, sheets = true } = {}) {
         );
         const content = el("div", "worksheet-content");
         content.append(
-          ...s.items.map((item) => createBlock(item.block, item.fragment)),
+          ...s.items.map((item) => {
+            const n = createBlock(item.block, item.fragment);
+            if (item.gap) n.style.marginTop = item.gap + "px";
+            return n;
+          }),
         );
         if (!s.items.length)
           content.append(
@@ -659,14 +833,19 @@ function render({ inspector = true, sheets = true } = {}) {
         sheet.append(header, content, footer);
         wrap.append(sheet);
         sheet.onclick = (e) => {
-          if (e.target.closest("[contenteditable=true]")) return;
+          if (
+            e.target.closest(
+              "[contenteditable=true],.selection-frame,.selection-handle",
+            )
+          )
+            return;
           const b = e.target.closest(".sheet-block");
           if (b) {
             const item = blockOf(b.dataset.block);
             // Free elements select on pointer-down so a group can start dragging
             // immediately. Do not toggle a Shift selection a second time here.
             if (!item?.floating || item.locked)
-              select(b.dataset.block, e.shiftKey);
+              select(b.dataset.block, e.shiftKey, s.pageId);
           } else if (!drag) select(null);
         };
         sheet.oncontextmenu = (e) => {
@@ -696,6 +875,10 @@ function render({ inspector = true, sheets = true } = {}) {
   }
   if (inspector) renderInspector();
   richEditor?.updateToolbar();
+  if (repeatCopiesChanged) {
+    repeatCopiesChanged = false;
+    scheduleSave();
+  }
 }
 function field(label, type, value, key, options) {
   const l = el("label", "", label),
@@ -719,7 +902,7 @@ function inspectorUpdate(input) {
   if (!b) return;
   const key = input.dataset.field;
   checkpoint(b.id + ":" + key);
-  if (["x", "y", "w", "height", "rotation"].includes(key)) {
+  if (["x", "y", "w", "height", "boxHeight", "rotation"].includes(key)) {
     let value = Number(input.value);
     if (!Number.isFinite(value)) return;
     if (key !== "rotation") value *= PX_PER_MM;
@@ -729,7 +912,7 @@ function inspectorUpdate(input) {
         : clamp(
             value,
             key === "w" ? 40 : 0,
-            key === "y" || key === "height" ? CONTENT_H : CONTENT_W,
+            ["y", "height", "boxHeight"].includes(key) ? CONTENT_H : CONTENT_W,
           );
   } else if (key === "floating" || key === "ruled" || key === "locked")
     b[key] = input.checked;
@@ -759,6 +942,9 @@ function inspectorUpdate(input) {
       b[key] = Math.round(b[key]);
       b.cells = resizeCells(b.cells, b.rows, b.cols);
     }
+  } else if (b.type === "habit" && ["title", "number"].includes(key)) {
+    b[key + "Runs"] = updateTextRuns(b[key], input.value, b[key + "Runs"], b);
+    b[key] = input.value;
   } else if (key === "text" || key === "value") {
     if (b.type === "text" || key === "value")
       b.runs = updateTextRuns(b[key], input.value, b.runs, b);
@@ -770,7 +956,7 @@ function inspectorUpdate(input) {
     ["w", "height", "kind"].includes(key)
   )
     b.w = b.height = key === "height" ? b.height : b.w;
-  if (b.floating) clampBlock(b);
+  fixTextLayout(b);
   finishChange({ inspector: false });
 }
 function button(label, action, cls = "") {
@@ -854,7 +1040,7 @@ function renderInspector() {
       el(
         "p",
         "small-help",
-        "Double-click the text to edit. Select words to format them. Enter or Shift+Enter adds a new line. Drag the border to move a free text box.",
+        "Click text to edit or select words. Click the border to format the whole box; drag it to move. Resize with the side or corner handles. Enter or Shift+Enter adds a new line.",
       ),
       field("Part label (optional)", "text", b.part, "part"),
       field("Question / text", "textarea", b.text, "text"),
@@ -877,7 +1063,14 @@ function renderInspector() {
       el(
         "p",
         "small-help",
-        "Add as many Math Habit banners as this question needs.",
+        "Double-click the banner title or number to edit on the page. Add as many Math Habit banners as this question needs.",
+      ),
+      button("Edit banner on page", () =>
+        richEditor.start(
+          document.querySelector(
+            `.worksheet [data-block="${b.id}"] .habit-title`,
+          ),
+        ),
       ),
     );
   if (b.type === "image") {
@@ -935,7 +1128,7 @@ function renderInspector() {
     );
     addCheck(root, "Show answer line", "showLine", b.showLine !== false);
   }
-  if (["text", "answer", "table"].includes(b.type))
+  if (["text", "answer", "table", "habit"].includes(b.type))
     root.append(
       el(
         "p",
@@ -983,7 +1176,7 @@ function renderInspector() {
       el(
         "p",
         "small-help",
-        "Double-click a cell to edit. Tab moves to the next cell. Change rows or columns to resize the table; existing cells are kept.",
+        "Click a cell to edit. Tab moves to the next cell. Change rows or columns to resize the table; existing cells are kept.",
       ),
       dimensions,
       field("Table line colour", "color", b.borderColor, "borderColor"),
@@ -1035,6 +1228,20 @@ function renderInspector() {
     );
   }
   if (b.floating) {
+    if (["text", "answer"].includes(b.type))
+      root.append(
+        field(
+          "Minimum box height (mm)",
+          "number",
+          ((b.boxHeight || 0) / PX_PER_MM).toFixed(1),
+          "boxHeight",
+        ),
+        el(
+          "p",
+          "small-help",
+          "Width wraps the text; height adds space. The box grows to keep every line visible.",
+        ),
+      );
     const pair = el("div", "field-pair");
     pair.append(
       field("X (mm)", "number", (b.x / PX_PER_MM).toFixed(1), "x"),
@@ -1047,6 +1254,55 @@ function renderInspector() {
     addAlignment(root);
     addCheck(root, "Lock position", "locked", b.locked);
   }
+  root.append(button("Repeat on future pages…", () => openRepeat(b.id)));
+  if (b.repeatOnPages) {
+    root.append(
+      el(
+        "p",
+        "small-help",
+        "Repeating from page " +
+          (project.pages.findIndex((p) => p.id === pageOf(b.id).id) + 1) +
+          (b.repeatMode === "independent"
+            ? ". New pages start with blank, independently editable content at this position."
+            : ". Text, formatting and position changes update every shared copy."),
+      ),
+      button("Stop repeating", () => stopRepeat(b.id)),
+    );
+  }
+  if (b.repeatedFrom) {
+    root.append(
+      el(
+        "p",
+        "small-help",
+        "Independent copy. Editing and moving this element affects only this copy.",
+      ),
+    );
+    if (blockOf(b.repeatedFrom)?.repeatOnPages)
+      root.append(
+        button(
+          blockOf(b.repeatedFrom).repeatMode === "independent"
+            ? "Reset from layout"
+            : "Use repeated version",
+          () => restoreRepeated(b.id),
+        ),
+      );
+  }
+  if (b.repeatOnPages)
+    root.append(
+      button("Make this copy independent", () =>
+        makeIndependent(
+          b.id,
+          activePage,
+          Number(
+            document
+              .querySelector(
+                `.worksheet[data-page="${activePage}"] [data-block="${b.id}"]`,
+              )
+              ?.closest(".worksheet").dataset.copyIndex || 0,
+          ),
+        ),
+      ),
+    );
   const pageField = field(
     "Move to page",
     "select",
@@ -1143,6 +1399,17 @@ function clampBlock(b) {
     ),
   );
 }
+function fixTextLayout(b) {
+  if (
+    b.floating &&
+    ["text", "answer", "table"].includes(b.type) &&
+    heightOf(b) > CONTENT_H
+  ) {
+    b.floating = false;
+    b.repeatOnPages = false;
+    toast("Long text moved into page flow so every line is included.");
+  } else if (b.floating) clampBlock(b);
+}
 function makeFree(ids, on = true) {
   if (
     on &&
@@ -1190,8 +1457,154 @@ function makeFree(ids, on = true) {
         Object.assign(b, { x: r?.x || 0, y: r?.y || 0, w: r?.w || CONTENT_W });
       }
       b.floating = on;
+      if (!on) b.repeatOnPages = false;
       clampBlock(b);
     }
+  });
+}
+let repeating = null;
+function openRepeat(id) {
+  richEditor.finish();
+  const b = blockOf(id),
+    n =
+      document.querySelector(
+        `.worksheet[data-page="${activePage}"] .sheet-block[data-block="${id}"]`,
+      ) ||
+      document.querySelector(`.worksheet .sheet-block[data-block="${id}"]`);
+  if (!b || !n) return;
+  const content = n.parentElement.getBoundingClientRect(),
+    rect = n.getBoundingClientRect(),
+    w = n.offsetWidth,
+    h = n.offsetHeight;
+  if (
+    h > CONTENT_H ||
+    w > CONTENT_W + 1 ||
+    (["text", "answer", "table"].includes(b.type) && heightOf(b) > CONTENT_H)
+  ) {
+    toast("Resize this element to fit on one page before repeating it.");
+    return;
+  }
+  const x = b.floating ? b.x : (rect.left - content.left) / zoom,
+    y = b.floating ? b.y : (rect.top - content.top) / zoom;
+  repeating = { id, w: Math.min(w, CONTENT_W), h };
+  $("repeat-name").textContent = labelOf(b);
+  for (const [axis, value, origin, limit, size] of [
+    ["x", x, CONTENT_X, CONTENT_W, repeating.w],
+    ["y", y, CONTENT_Y, CONTENT_H, h],
+  ]) {
+    const input = $("repeat-" + axis);
+    input.min = (origin / PX_PER_MM).toFixed(3);
+    input.max = ((origin + limit - size) / PX_PER_MM).toFixed(3);
+    input.value = (
+      (origin + clamp(value, 0, limit - size)) /
+      PX_PER_MM
+    ).toFixed(3);
+  }
+  $("repeat-error").textContent = "";
+  $("repeat-clear").checked = b.repeatKeepClear !== false;
+  $("repeat-mode").value = b.repeatOnPages
+    ? b.repeatMode || "shared"
+    : ["text", "answer", "table", "image"].includes(b.type)
+      ? "independent"
+      : "shared";
+  $("repeat-dialog").showModal();
+}
+function stopRepeat(id) {
+  mutate(() => {
+    const b = blockOf(id);
+    if (b) b.repeatOnPages = false;
+    if (pageOf(id)?.id !== activePage)
+      selected = selected.filter((x) => x !== id);
+  });
+}
+$("repeat-cancel").onclick = () => $("repeat-dialog").close();
+$("repeat-save").onclick = () => {
+  const b = blockOf(repeating?.id);
+  if (!b) return;
+  const x = Number($("repeat-x").value) * PX_PER_MM - CONTENT_X,
+    y = Number($("repeat-y").value) * PX_PER_MM - CONTENT_Y;
+  if (
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    x < -0.005 ||
+    y < -0.005 ||
+    x + repeating.w > CONTENT_W + 0.005 ||
+    y + repeating.h > CONTENT_H + 0.005
+  ) {
+    $("repeat-error").textContent =
+      `Keep the element within the content area. X: ${$("repeat-x").min}–${$("repeat-x").max} mm; Y: ${$("repeat-y").min}–${$("repeat-y").max} mm. Resize the element first if you need more room.`;
+    return;
+  }
+  const keepClear = $("repeat-clear").checked;
+  if (keepClear) {
+    const reserved = pageBlocks(project, activePage)
+      .filter(
+        (v) => v.id !== b.id && v.repeatOnPages && v.repeatKeepClear !== false,
+      )
+      .map((v) => ({ y: v.y, h: heightOf(v) }));
+    const bands = flowBands([...reserved, { y, h: repeating.h }]);
+    if (!bands.some((r) => r.height >= 80)) {
+      $("repeat-error").textContent =
+        "Leave at least 22 mm of vertical space for questions, or turn off ‘Keep flowing questions clear’.";
+      return;
+    }
+  }
+  mutate(() => {
+    Object.assign(b, {
+      floating: true,
+      repeatOnPages: true,
+      repeatKeepClear: keepClear,
+      repeatMode: $("repeat-mode").value,
+      w: repeating.w,
+      x,
+      y,
+    });
+    if (b.repeatMode === "independent" && ["text", "answer"].includes(b.type))
+      b.boxHeight = repeating.h;
+    clampBlock(b);
+  });
+  $("repeat-dialog").close();
+  toast(
+    "Element repeats at this position on continuation sheets and later pages.",
+  );
+};
+$("repeat-dialog").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    $("repeat-save").click();
+  }
+});
+function makeIndependent(id, pageId, sheetIndex) {
+  richEditor.finish();
+  const source = blockOf(id),
+    page = project.pages.find((p) => p.id === pageId);
+  if (!source?.repeatOnPages || !page) return;
+  mutate(() => {
+    const copy = independentCopy(source, { sheetIndex });
+    page.repeatSuppressed ||= [];
+    page.repeatSuppressed.push({ sourceId: id, sheetIndex });
+    page.blocks.push(copy);
+    selected = [copy.id];
+    activePage = pageId;
+  });
+  toast(
+    "This copy is independent. You can edit it without changing any other page.",
+  );
+}
+function restoreRepeated(id) {
+  const copy = blockOf(id),
+    page = pageOf(id);
+  if (!copy?.repeatedFrom || !page) return;
+  mutate(() => {
+    page.repeatSuppressed = (page.repeatSuppressed || []).filter(
+      (r) =>
+        !(
+          r.sourceId === copy.repeatedFrom &&
+          r.sheetIndex === (copy.sheetIndex || 0)
+        ),
+    );
+    page.blocks = page.blocks.filter((b) => b.id !== id);
+    selected = [];
   });
 }
 function alignSelected(direction) {
@@ -1203,7 +1616,13 @@ function alignSelected(direction) {
     return;
   }
   const rects = items.map((b) => displayRect(b.id)),
-    samePage = new Set(items.map((b) => pageOf(b.id).id));
+    samePage = new Set(
+      items.map((b) =>
+        pageBlocks(project, activePage).some((v) => v.id === b.id)
+          ? activePage
+          : pageOf(b.id).id,
+      ),
+    );
   if (samePage.size > 1) {
     toast("Select elements on the same page to align together.");
     return;
@@ -1276,13 +1695,19 @@ function duplicateSelected() {
       if (!b) continue;
       const copy = clone(b);
       copy.id = uid();
+      copy.repeatOnPages = false;
+      delete copy.repeatedFrom;
       if (copy.floating) {
         copy.x += 16;
         copy.y += 16;
         clampBlock(copy);
       }
-      const p = pageOf(id);
-      p.blocks.splice(p.blocks.indexOf(b) + 1, 0, copy);
+      const p = pageOf(id).id === activePage ? pageOf(id) : currentPage();
+      p.blocks.splice(
+        p.blocks.includes(b) ? p.blocks.indexOf(b) + 1 : p.blocks.length,
+        0,
+        copy,
+      );
       ids.push(copy.id);
     }
     selected = ids;
@@ -1290,6 +1715,24 @@ function duplicateSelected() {
 }
 function deleteSelected() {
   mutate(() => {
+    for (const id of selected) {
+      const b = blockOf(id),
+        p = pageOf(id);
+      if (b?.repeatedFrom && p) {
+        p.repeatSuppressed ||= [];
+        if (
+          !p.repeatSuppressed.some(
+            (r) =>
+              r.sourceId === b.repeatedFrom &&
+              r.sheetIndex === (b.sheetIndex || 0),
+          )
+        )
+          p.repeatSuppressed.push({
+            sourceId: b.repeatedFrom,
+            sheetIndex: b.sheetIndex || 0,
+          });
+      }
+    }
     for (const p of project.pages)
       p.blocks = p.blocks.filter((b) => !selected.includes(b.id));
     selected = [];
@@ -1310,6 +1753,7 @@ function duplicatePage() {
   mutate(() => {
     const p = clone(currentPage());
     p.id = uid();
+    p.blocks = p.blocks.filter((b) => !b.repeatOnPages);
     p.blocks.forEach((b) => (b.id = uid()));
     project.pages.splice(
       project.pages.findIndex((x) => x.id === activePage) + 1,
@@ -1383,7 +1827,13 @@ function insertAction(action) {
   richEditor.finish();
   if (action === "text") {
     const b = addBlock(
-      makeBlock("text", { floating: true, w: 320, x: 40, y: nextFreeY() }),
+      makeBlock("text", {
+        floating: true,
+        w: 320,
+        boxHeight: 80,
+        x: 40,
+        y: nextFreeY(),
+      }),
     );
     richEditor.start(
       document.querySelector(
@@ -1511,6 +1961,7 @@ function setupShortcuts() {
 }
 function startDrag(e) {
   const n = e.target.closest(".sheet-block");
+  const chrome = e.target.closest(".selection-frame,.selection-handle");
   if (
     !n ||
     e.button !== 0 ||
@@ -1521,24 +1972,51 @@ function startDrag(e) {
     return;
   const id = n.dataset.block,
     b = blockOf(id);
-  if (!b.floating || b.locked) return;
+  if (
+    !chrome &&
+    e.target.closest(".rich-textbox") &&
+    b.type !== "habit" &&
+    !e.shiftKey
+  )
+    return;
+  if (!b.floating && !chrome) return;
   if (e.shiftKey) {
-    select(id, true);
+    select(id, true, n.closest(".worksheet").dataset.page);
     if (!selected.includes(id)) return;
-  } else if (!selected.includes(id)) select(id);
-  e.preventDefault();
+  } else if (!selected.includes(id))
+    select(id, false, n.closest(".worksheet").dataset.page);
+  else activePage = n.closest(".worksheet").dataset.page;
+  // Let banner mouse-down/double-click reach its editable title/number.
+  // Preventing pointer-down would suppress the compatibility mouse events.
+  if (!e.target.closest("[data-activation=double]")) e.preventDefault();
+  n.focus({ preventScroll: true });
+  if (b.locked || (!b.floating && heightOf(b) > CONTENT_H)) return;
+  // A flow question gains free placement only when its border/handle is
+  // actually dragged. A simple border click still selects the whole question.
+  const wasFloating = !!b.floating;
   const corner = e.target.dataset.corner,
-    ids = corner
-      ? [id]
-      : selected.filter(
-          (x) =>
-            blockOf(x)?.floating &&
-            !blockOf(x).locked &&
-            pageOf(x).id === pageOf(id).id,
-        );
-  const starts = ids.map((id) => ({ id, ...displayRect(id) }));
+    ids =
+      corner || !wasFloating
+        ? [id]
+        : selected.filter(
+            (x) =>
+              blockOf(x)?.floating &&
+              !blockOf(x).locked &&
+              pageBlocks(project, activePage).some((b) => b.id === x),
+          );
+  const starts = ids.map((id) => {
+    const r = displayRect(id);
+    if (!wasFloating && id === b.id) {
+      const box = n.getBoundingClientRect(),
+        content = n.parentElement.getBoundingClientRect();
+      r.x = (box.left - content.left) / zoom;
+      r.y = (box.top - content.top) / zoom;
+    }
+    return { id, ...r };
+  });
   drag = {
     id,
+    pageId: n.closest(".worksheet").dataset.page,
     ids,
     starts,
     pointer: e.pointerId,
@@ -1547,17 +2025,18 @@ function startDrag(e) {
     lastX: e.clientX,
     lastY: e.clientY,
     corner,
+    wasFloating,
     changed: false,
     content: n.parentElement,
+    element: n,
     offsetX:
-      (e.clientX - n.parentElement.getBoundingClientRect().left) / zoom - b.x,
+      (e.clientX - n.parentElement.getBoundingClientRect().left) / zoom -
+      starts[0].x,
     offsetY:
-      (e.clientY - n.parentElement.getBoundingClientRect().top) / zoom - b.y,
+      (e.clientY - n.parentElement.getBoundingClientRect().top) / zoom -
+      starts[0].y,
   };
   document.body.classList.add("dragging");
-  try {
-    n.setPointerCapture(e.pointerId);
-  } catch {}
 }
 function drawGuides(content, guides) {
   content.querySelectorAll(".alignment-guide").forEach((n) => n.remove());
@@ -1577,24 +2056,46 @@ window.addEventListener("pointermove", (e) => {
   if (!drag.changed) {
     checkpoint();
     drag.changed = true;
+    try {
+      drag.element.setPointerCapture(drag.pointer);
+    } catch {}
   }
   const base = drag.starts[0],
     b = blockOf(drag.id);
+  if (!b.floating) {
+    Object.assign(b, { floating: true, x: base.x, y: base.y, w: base.w });
+    const n = document.querySelector(`.sheet-block[data-block="${b.id}"]`);
+    n?.classList.add("floating");
+  }
   if (drag.corner) {
     const left = drag.corner.includes("w"),
-      top = drag.corner.includes("n");
-    const raw = base.w + (left ? -dx : dx),
+      top = drag.corner.includes("n"),
+      horizontal = /[ew]/.test(drag.corner),
+      vertical = /[ns]/.test(drag.corner),
+      textBox = ["text", "answer"].includes(b.type);
+    const raw = base.w + (horizontal ? (left ? -dx : dx) : 0),
       maxByHeight =
         b.type === "image"
           ? ((CONTENT_H - (b.caption ? 28 : 0)) * b.naturalWidth) /
             b.naturalHeight
           : CONTENT_W;
-    b.w = clamp(raw, 40, Math.min(CONTENT_W, maxByHeight));
+    if (horizontal)
+      b.w = clamp(
+        raw,
+        40,
+        Math.min(left ? base.x + base.w : CONTENT_W - base.x, maxByHeight),
+      );
     if (b.type === "shape")
       b.height =
         b.kind === "circle"
           ? b.w
           : clamp(base.h + (top ? -dy : dy), 20, CONTENT_H);
+    if (textBox && vertical)
+      b.boxHeight = clamp(
+        base.h + (top ? -dy : dy),
+        24,
+        top ? base.y + base.h : CONTENT_H - base.y,
+      );
     const h =
       b.type === "image"
         ? (b.w * b.naturalHeight) / b.naturalWidth + (b.caption ? 28 : 0)
@@ -1605,8 +2106,8 @@ window.addEventListener("pointermove", (e) => {
     b.y = base.y + (top ? base.h - h : 0);
     clampBlock(b);
   } else {
-    const others = currentPage()
-      .blocks.filter((x) => x.floating && !drag.ids.includes(x.id))
+    const others = pageBlocks(project, activePage)
+      .filter((x) => x.floating && !drag.ids.includes(x.id))
       .map((x) => displayRect(x.id));
     const pos = snapPosition(
       base.x + dx,
@@ -1626,11 +2127,13 @@ window.addEventListener("pointermove", (e) => {
   }
   for (const id of drag.ids) {
     const item = blockOf(id),
-      n = document.querySelector(`.sheet-block[data-block="${id}"]`);
-    if (n) {
+      nodes = document.querySelectorAll(`.sheet-block[data-block="${id}"]`);
+    for (const n of nodes) {
       n.style.left = item.x + "px";
       n.style.top = item.y + "px";
       n.style.width = item.w + "px";
+      if (["text", "answer"].includes(item.type) && item.boxHeight)
+        n.style.minHeight = item.boxHeight + "px";
       if (item.type === "shape") {
         n.style.height = item.height + "px";
         n.querySelector("svg").outerHTML = shapeSvg(item);
@@ -1650,7 +2153,7 @@ function endDrag() {
         .elementFromPoint(drag.lastX, drag.lastY)
         ?.closest(".worksheet-content"),
       pageId = target?.closest(".worksheet")?.dataset.page;
-    if (pageId && pageId !== pageOf(drag.id).id) {
+    if (pageId && pageId !== drag.pageId) {
       const destination = project.pages.find((p) => p.id === pageId),
         r = target.getBoundingClientRect(),
         first = drag.starts[0];
@@ -1671,7 +2174,13 @@ function endDrag() {
   drag.content.querySelectorAll(".alignment-guide").forEach((n) => n.remove());
   drag = null;
   document.body.classList.remove("dragging");
-  if (changed) finishChange();
+  if (changed) {
+    for (const id of selected) {
+      const b = blockOf(id);
+      if (b) fixTextLayout(b);
+    }
+    finishChange();
+  }
 }
 window.addEventListener("pointerup", endDrag);
 window.addEventListener("pointercancel", endDrag);
@@ -1681,7 +2190,10 @@ menu.setAttribute("role", "menu");
 document.body.append(menu);
 function openContext(e, id) {
   e.preventDefault();
-  select(id);
+  const sheet = e.target.closest(".worksheet"),
+    contextPageId = sheet?.dataset.page || activePage;
+  contextSheetIndex = Number(sheet?.dataset.copyIndex || 0);
+  select(id, false, contextPageId);
   contextTarget = id;
   menu.replaceChildren();
   const b = blockOf(id);
@@ -1704,7 +2216,7 @@ function openContext(e, id) {
       "Edit text",
       () => {
         const node = document.querySelector(
-          `.sheet-block[data-block="${b.id}"] .rich-textbox`,
+          `.worksheet[data-page="${contextPageId}"][data-copy-index="${contextSheetIndex}"] .sheet-block[data-block="${b.id}"] ${b.type === "habit" ? ".habit-title" : ".rich-textbox"}`,
         );
         if (node) richEditor.start(node);
         else $("inspector-content").querySelector("textarea,input")?.focus();
@@ -1715,7 +2227,21 @@ function openContext(e, id) {
   entries.push(
     ["Copy formatting", () => richEditor.copyFormat()],
     ["Paste formatting", () => richEditor.pasteFormat()],
+    ["Repeat on future pages…", () => openRepeat(id)],
   );
+  if (b.repeatOnPages) entries.push(["Stop repeating", () => stopRepeat(id)]);
+  if (b.repeatOnPages)
+    entries.push([
+      "Make this copy independent",
+      () => makeIndependent(id, contextPageId, contextSheetIndex),
+    ]);
+  if (b.repeatedFrom && blockOf(b.repeatedFrom)?.repeatOnPages)
+    entries.push([
+      blockOf(b.repeatedFrom).repeatMode === "independent"
+        ? "Reset from layout"
+        : "Use repeated version",
+      () => restoreRepeated(id),
+    ]);
   entries.push(
     [
       b.floating ? "Return to text flow" : "Free placement",
@@ -1841,6 +2367,7 @@ async function addFiles(files, at = null) {
             naturalHeight: img.naturalHeight,
             originalWidth: img.naturalWidth,
             originalHeight: img.naturalHeight,
+            templatePlaceholder: false,
           });
           clampBlock(target);
         });
@@ -1869,6 +2396,7 @@ document.addEventListener("paste", (e) => {
     .filter(Boolean);
   if (files.length) {
     e.preventDefault();
+    if (blockOf(selected[0])?.templatePlaceholder) replacementId = selected[0];
     addFiles(files);
     return;
   }
@@ -2206,6 +2734,7 @@ function pageSvg(sheet) {
       n.classList.contains("selection-handle") ||
       n.classList.contains("alignment-guide") ||
       n.classList.contains("empty-page") ||
+      n.hasAttribute("data-editor-ui") ||
       n.hasAttribute("data-caret")
     )
       return;
@@ -2397,16 +2926,8 @@ $("print").onclick = async () => {
   window.print();
 };
 const richEditor = createRichEditor({
-  fixLayout: (b) => {
-    if (
-      b.floating &&
-      ["text", "answer", "table"].includes(b.type) &&
-      heightOf(b) > CONTENT_H
-    ) {
-      b.floating = false;
-      toast("Long text moved into page flow so every line is included.");
-    } else if (b.floating) clampBlock(b);
-  },
+  cancelDrag: endDrag,
+  fixLayout: fixTextLayout,
   project: () => project,
   selected: () => selected,
   block: blockOf,
@@ -2422,6 +2943,13 @@ const richEditor = createRichEditor({
 const aiStudio = createAIStudio({
   project: () => project,
   page: currentPage,
+  pageBlocks: (pageId) => [
+    ...new Map(
+      renderedSheets
+        .filter((s) => s.pageId === pageId)
+        .flatMap((s) => s.items.map((i) => [i.block.id, i.block])),
+    ).values(),
+  ],
   block: blockOf,
   selected: () => selected,
   finishText: () => richEditor.finish(),

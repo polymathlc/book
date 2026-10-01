@@ -46,6 +46,14 @@ const { chromium } = require("playwright");
     page.on("pageerror", (e) => errors.push(e.message));
     const base = `http://127.0.0.1:${server.address().port}`;
     await page.route("https://www.gstatic.com/**", (route) => route.abort());
+    if (process.env.BOOK_TEMPLATES_ONLY) {
+      await require("./page-templates.cjs")(browser, base, output);
+      return;
+    }
+    if (process.env.BOOK_TEXTBOXES_ONLY) {
+      await require("./powerpoint-textboxes.cjs")(browser, base, output);
+      return;
+    }
     if (process.env.BOOK_FEATURES_ONLY) {
       await require("./editor-features.cjs")(browser, base, output);
       return;
@@ -142,6 +150,7 @@ const { chromium } = require("playwright");
     assert.ok(Math.abs(image.x + image.w / 2 - (186 * 96) / 25.4 / 2) < 0.1);
     const w = image.w;
     const handle = imageNode.locator(".selection-handle.se");
+    await handle.scrollIntoViewIfNeeded();
     box = await handle.boundingBox();
     await page.mouse.move(box.x + 4, box.y + 4);
     await page.mouse.down();
@@ -326,6 +335,8 @@ const { chromium } = require("playwright");
     await page.screenshot({ path: path.join(output, "mobile.png") });
     assert.deepEqual(errors, []);
     await require("./editor-features.cjs")(browser, base, output);
+    await require("./powerpoint-textboxes.cjs")(browser, base, output);
+    await require("./page-templates.cjs")(browser, base, output);
     console.log(
       "Browser acceptance passed: paste, native pixels, multiple habits, drag/resize/align, CER edit/undo, long-page flow, A4 PDF/SVG, mobile, autosave, project round-trip.",
     );

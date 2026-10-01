@@ -51,15 +51,16 @@ export function richBox(
       ? `Table cell ${cell[0] + 1}, ${cell[1] + 1}`
       : key === "value"
         ? "Answer text"
-        : "Question text",
+        : key === "title"
+          ? "Math Habit title"
+          : key === "number"
+            ? "Math Habit number"
+            : "Question text",
   );
-  node.title = "Double-click to edit text";
+  node.title = "Click to edit text · Drag the border to move the box";
+  node.tabIndex = 0;
   node.dataset.placeholder =
-    key === "value"
-      ? "Double-click to type an answer"
-      : cell
-        ? ""
-        : "Double-click to type…";
+    key === "value" ? "Click to type an answer" : cell ? "" : "Click to type…";
   paintFormat(node, { ...block, underline: false });
   node.style.textAlign = block.align || "left";
   node.style.lineHeight = block.lineSpacing || 1.6;
@@ -81,11 +82,25 @@ export function createRichEditor(api) {
       block,
       target: cell ? block.cells[cell[0]][cell[1]] : block,
       key: node.dataset.rich,
+      runsKey: block.type === "habit" ? node.dataset.rich + "Runs" : "runs",
       cell,
     };
   }
   const textOf = (ed) => String(ed.target[ed.key] || "");
-  const runsOf = (ed) => normaliseRuns(textOf(ed), ed.target.runs);
+  const runsOf = (ed) => normaliseRuns(textOf(ed), ed.target[ed.runsKey]);
+  function baseFormat(ed) {
+    const base = { ...ed.block, ...ed.target };
+    if (ed.block.type === "habit") {
+      base.fontSize ||= 14;
+      base.bold ??= true;
+      base.color ||= "#203c44";
+      if (ed.key === "number") {
+        base.color = "#ffffff";
+        base.bold = true;
+      }
+    }
+    return base;
+  }
   function textNodes(root) {
     const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const nodes = [];
@@ -107,17 +122,20 @@ export function createRichEditor(api) {
     const prefix = document.createRange();
     prefix.selectNodeContents(editing.node);
     prefix.setEnd(range.startContainer, range.startOffset);
-    const start = prefix.toString().replace(/\u200b/g, "").length;
+    const start =
+      editing.start + prefix.toString().replace(/\u200b/g, "").length;
     editing.range = {
-      start: Math.min(start, textOf(editing).length),
+      start: Math.min(start, editing.end),
       end: Math.min(
         start + range.toString().replace(/\u200b/g, "").length,
-        textOf(editing).length,
+        editing.end,
       ),
     };
   }
   function restoreRange(start, end = start) {
     if (!editing) return;
+    start = Math.max(editing.start, Math.min(start, editing.end));
+    end = Math.max(start, Math.min(end, editing.end));
     const nodes = textNodes(editing.node),
       range = document.createRange();
     function point(position) {
@@ -129,8 +147,8 @@ export function createRichEditor(api) {
       const tail = editing.node.querySelector("[data-caret]")?.firstChild;
       return tail ? [tail, 0] : [editing.node, editing.node.childNodes.length];
     }
-    range.setStart(...point(start));
-    range.setEnd(...point(end));
+    range.setStart(...point(start - editing.start));
+    range.setEnd(...point(end - editing.start));
     const selection = getSelection();
     selection.removeAllRanges();
     selection.addRange(range);
@@ -138,18 +156,21 @@ export function createRichEditor(api) {
     editing.node.focus({ preventScroll: true });
   }
   function repaint(start, end = start) {
-    paintFormat(editing.node, {
-      ...editing.block,
-      ...editing.target,
-      underline: false,
-    });
+    editing.node.dataset.start = editing.start;
+    editing.node.dataset.end = editing.end;
+    paintFormat(editing.node, { ...baseFormat(editing), underline: false });
     editing.node.style.textAlign =
       editing.target.align || editing.block.align || "left";
-    paintRuns(editing.node, textOf(editing), editing.target.runs, {
-      ...editing.block,
-      ...editing.target,
-    });
-    if (!textOf(editing) || textOf(editing).endsWith("\n")) {
+    editing.node.style.lineHeight =
+      editing.target.lineSpacing || editing.block.lineSpacing || 1.6;
+    const text = textOf(editing).slice(editing.start, editing.end);
+    paintRuns(
+      editing.node,
+      text,
+      sliceRuns(runsOf(editing), editing.start, editing.end),
+      baseFormat(editing),
+    );
+    if (!text || text.endsWith("\n")) {
       const tail = document.createElement("span");
       tail.dataset.caret = "true";
       tail.textContent = "\u200b";
@@ -157,21 +178,46 @@ export function createRichEditor(api) {
     }
     restoreRange(start, end);
   }
-  function start(node) {
+  function start(node, { pointer = false } = {}) {
     if (!node || editing?.node === node || window.BookTouchup?.isOpen()) return;
-    finish();
-    // A split text block is edited as one complete box, then repaginated on Done.
     const data = targetFor(node);
     if (!data) return;
-    api.select(data.block.id);
-    editing = { ...data, node, range: { start: 0, end: 0 }, pending: null };
+    // Keep both nodes alive when clicking directly from one box to another.
+    finish({ render: false });
+    api.select(data.block.id, false, node.closest(".worksheet").dataset.page);
+    const from = Number(node.dataset.start) || 0,
+      to = Math.min(Number(node.dataset.end), textOf(data).length);
+    editing = {
+      ...data,
+      node,
+      start: from,
+      end: Number.isFinite(to) ? to : textOf(data).length,
+      range: { start: from, end: from },
+      pending: null,
+    };
     node.contentEditable = "true";
     node.classList.add("editing-text");
     node.title = "Enter or Shift+Enter: new line · Escape: done";
     const sheetBlock = node.closest(".sheet-block");
     sheetBlock.classList.add("editing-block");
     node.closest(".worksheet-content").classList.add("editing-content");
-    repaint(textOf(editing).length);
+    // Pointer-down runs before the browser's native caret/word/drag selection.
+    // Editing a continuation preserves its offset instead of expanding the
+    // entire question under the pointer and changing which word was clicked.
+    if (pointer && textOf(editing).slice(from, editing.end)) {
+      // Preserve the actual pointer target. Replacing its span here would
+      // detach the target before native mouse-down can place the caret.
+      if (
+        textOf(editing).slice(from, editing.end).endsWith("\n") &&
+        !node.querySelector("[data-caret]")
+      ) {
+        const tail = document.createElement("span");
+        tail.dataset.caret = "true";
+        tail.textContent = "\u200b";
+        node.append(tail);
+      }
+      node.focus({ preventScroll: true });
+    } else repaint(editing.end);
     updateToolbar();
   }
   function finish({ render = true } = {}) {
@@ -190,8 +236,7 @@ export function createRichEditor(api) {
   function currentFormat() {
     if (editing) {
       const base = {
-        ...cleanFormat(editing.block),
-        ...cleanFormat(editing.target),
+        ...cleanFormat(baseFormat(editing)),
       };
       if (!base.fontSize) base.fontSize = api.project().fontSize;
       if (base.bold === undefined)
@@ -210,8 +255,8 @@ export function createRichEditor(api) {
     }
     const b = selectedBlocks()[0] || {};
     return {
-      fontSize: api.project().fontSize,
-      bold: b.style === "heading",
+      fontSize: b.type === "habit" ? 14 : api.project().fontSize,
+      bold: b.style === "heading" || b.type === "habit",
       ...cleanFormat(b),
     };
   }
@@ -219,16 +264,43 @@ export function createRichEditor(api) {
     api.save();
     updateToolbar();
   }
+  function shiftFragments(start, end, delta) {
+    if (!delta) return;
+    for (const node of document.querySelectorAll(
+      `.worksheet [data-block="${editing.block.id}"] .rich-textbox`,
+    )) {
+      if (
+        node === editing.node ||
+        node.dataset.rich !== editing.key ||
+        node.dataset.cell !== editing.node.dataset.cell
+      )
+        continue;
+      const from = Number(node.dataset.start),
+        to = Number(node.dataset.end);
+      if (from >= end && from !== editing.start)
+        node.dataset.start = from + delta;
+      if (to > start || (to === start && from === start))
+        node.dataset.end = to + delta;
+    }
+  }
   function insert(runs) {
     if (!editing) return;
     capture();
     const { start, end } = editing.range;
     api.checkpoint(editing.block.id + ":typing");
-    editing.target.runs = replaceRuns(runsOf(editing), start, end, runs);
-    editing.target[editing.key] = editing.target.runs
+    editing.target[editing.runsKey] = replaceRuns(
+      runsOf(editing),
+      start,
+      end,
+      runs,
+    );
+    editing.target[editing.key] = editing.target[editing.runsKey]
       .map((r) => r.text)
       .join("");
-    repaint(start + runs.map((r) => r.text).join("").length);
+    const length = runs.map((r) => r.text).join("").length;
+    shiftFragments(start, end, length - (end - start));
+    editing.end += length - (end - start);
+    repaint(start + length);
     changed();
   }
   function apply(format) {
@@ -243,12 +315,17 @@ export function createRichEditor(api) {
         return;
       }
       api.checkpoint();
-      editing.target.runs = formatRuns(runsOf(editing), start, end, format);
+      editing.target[editing.runsKey] = formatRuns(
+        runsOf(editing),
+        start,
+        end,
+        format,
+      );
       repaint(start, end);
       changed();
     } else {
       const blocks = selectedBlocks().filter((b) =>
-        ["text", "answer", "table"].includes(b.type),
+        ["text", "answer", "table", "habit"].includes(b.type),
       );
       if (!blocks.length) return;
       api.mutate(() => {
@@ -266,14 +343,21 @@ export function createRichEditor(api) {
                 );
               }
           else {
-            const text = b.type === "answer" ? b.value : b.text;
-            b.runs = formatRuns(
-              normaliseRuns(text, b.runs),
+            const text =
+                b.type === "answer"
+                  ? b.value
+                  : b.type === "habit"
+                    ? b.title
+                    : b.text,
+              runsKey = b.type === "habit" ? "titleRuns" : "runs";
+            b[runsKey] = formatRuns(
+              normaliseRuns(text, b[runsKey]),
               0,
               text.length,
               format,
             );
           }
+          api.fixLayout?.(b);
         }
       });
     }
@@ -290,11 +374,12 @@ export function createRichEditor(api) {
     } else
       api.mutate(() => {
         for (const b of selectedBlocks())
-          if (["text", "answer", "table"].includes(b.type)) {
+          if (["text", "answer", "table", "habit"].includes(b.type)) {
             b.align = value;
             if (b.type === "table")
               for (const row of b.cells)
                 for (const cell of row) cell.align = value;
+            api.fixLayout?.(b);
           }
       });
     updateToolbar();
@@ -311,11 +396,12 @@ export function createRichEditor(api) {
     } else
       api.mutate(() => {
         for (const b of selectedBlocks())
-          if (["text", "answer", "table"].includes(b.type)) {
+          if (["text", "answer", "table", "habit"].includes(b.type)) {
             b.lineSpacing = value;
             if (b.type === "table")
               for (const row of b.cells)
                 for (const cell of row) cell.lineSpacing = value;
+            api.fixLayout?.(b);
           }
       });
     updateToolbar();
@@ -366,7 +452,9 @@ export function createRichEditor(api) {
     const blocks = selectedBlocks(),
       enabled =
         !!editing ||
-        blocks.some((b) => ["text", "answer", "table"].includes(b.type));
+        blocks.some((b) =>
+          ["text", "answer", "table", "habit"].includes(b.type),
+        );
     const format = currentFormat();
     for (const node of $("format-toolbar").querySelectorAll(
       "select,input,button[data-text-align],#format-bold,#format-italic,#format-underline",
@@ -432,24 +520,64 @@ export function createRichEditor(api) {
       updateToolbar();
     }
   });
-  document.addEventListener("dblclick", (e) => {
-    const node =
-      e.target.closest(".rich-textbox") ||
-      e.target.closest(".answer-block")?.querySelector(".rich-textbox");
-    if (node) {
-      e.preventDefault();
-      start(node);
-    }
-  });
   document.addEventListener(
     "pointerdown",
     (e) => {
+      if (window.BookTouchup?.isOpen()) return;
+      const chrome = e.target.closest(".selection-frame,.selection-handle"),
+        node =
+          !chrome &&
+          (e.target.closest(".rich-textbox") ||
+            e.target
+              .closest(".answer-block, .worksheet-table td")
+              ?.querySelector(".rich-textbox"));
       if (
         editing &&
         !editing.node.contains(e.target) &&
         !e.target.closest("#format-toolbar")
-      )
-        finish();
+      ) {
+        finish({ render: false });
+        // Reflow after the incoming click, so its target is not detached before
+        // the browser or an inspector button gets to handle it.
+        document.addEventListener(
+          "pointerup",
+          () => {
+            setTimeout(() => {
+              if (!editing) api.render({ inspector: false });
+            }, 0);
+          },
+          { once: true },
+        );
+      }
+      if (node && e.button === 0) {
+        if (e.shiftKey && editing?.node !== node) {
+          e.preventDefault();
+          return;
+        }
+        if (
+          node.dataset.activation === "double" &&
+          e.detail < 2 &&
+          editing?.node !== node
+        )
+          return;
+        start(node, { pointer: !!e.target.closest(".rich-textbox") });
+        if (!e.target.closest(".rich-textbox")) e.preventDefault();
+      }
+    },
+    true,
+  );
+  document.addEventListener("focusin", (e) => {
+    if (e.target.matches(".rich-textbox:not([data-activation=double])"))
+      start(e.target);
+  });
+  document.addEventListener(
+    "mousedown",
+    (e) => {
+      const node = e.target.closest(".rich-textbox[data-activation=double]");
+      if (node && e.button === 0 && e.detail >= 2 && !e.shiftKey) {
+        api.cancelDrag?.();
+        start(node, { pointer: true });
+      }
     },
     true,
   );
@@ -470,9 +598,15 @@ export function createRichEditor(api) {
       e.preventDefault();
       const range = editing.range;
       if (range.start === range.end && e.inputType !== "deleteByCut") {
+        if (
+          (e.inputType === "deleteContentBackward" &&
+            range.start === editing.start) ||
+          (e.inputType === "deleteContentForward" && range.end === editing.end)
+        )
+          return;
         if (e.inputType === "deleteContentBackward")
           range.start = Math.max(
-            0,
+            editing.start,
             range.start -
               (/[\uDC00-\uDFFF]/.test(textOf(editing)[range.start - 1] || "")
                 ? 2
@@ -480,7 +614,7 @@ export function createRichEditor(api) {
           );
         else
           range.end = Math.min(
-            textOf(editing).length,
+            editing.end,
             range.end +
               (/[\uD800-\uDBFF]/.test(textOf(editing)[range.end] || "")
                 ? 2
@@ -540,13 +674,24 @@ export function createRichEditor(api) {
   document.addEventListener("input", (e) => {
     if (!editing || !editing.node.contains(e.target)) return;
     // Browser-managed IME, spellcheck and less common deletion operations.
-    capture();
     api.checkpoint(editing.block.id + ":typing");
     const runs = mergeRuns(
       [...editing.node.childNodes].flatMap((n) => readDOM(n)),
     );
-    editing.target.runs = runs;
-    editing.target[editing.key] = runs.map((r) => r.text).join("");
+    const oldEnd = editing.end;
+    editing.target[editing.runsKey] = replaceRuns(
+      runsOf(editing),
+      editing.start,
+      oldEnd,
+      runs,
+    );
+    editing.target[editing.key] = editing.target[editing.runsKey]
+      .map((r) => r.text)
+      .join("");
+    editing.end = editing.start + runs.map((r) => r.text).join("").length;
+    shiftFragments(editing.start, oldEnd, editing.end - oldEnd);
+    editing.node.dataset.end = editing.end;
+    capture();
     changed();
   });
   document.addEventListener(
@@ -598,7 +743,7 @@ export function createRichEditor(api) {
           ["b", "i", "u"].includes(key) &&
           (editing ||
             selectedBlocks().some((b) =>
-              ["text", "answer", "table"].includes(b.type),
+              ["text", "answer", "table", "habit"].includes(b.type),
             ))
         ) {
           e.preventDefault();
@@ -612,13 +757,29 @@ export function createRichEditor(api) {
           return;
         }
       }
+      if (!editing && !formInput && ["Enter", "F2"].includes(e.key)) {
+        const b = selectedBlocks().length === 1 && selectedBlocks()[0];
+        if (b && ["text", "answer", "table", "habit"].includes(b.type)) {
+          e.preventDefault();
+          start(
+            document.querySelector(
+              `.worksheet [data-block="${b.id}"] ${b.type === "habit" ? ".habit-title" : ".rich-textbox"}`,
+            ),
+          );
+        }
+        return;
+      }
       if (!editing || !editing.node.contains(e.target)) return;
       if (e.key === "Enter") {
         e.preventDefault();
         insert([{ text: "\n", ...currentFormat() }]);
       } else if (e.key === "Escape") {
         e.preventDefault();
+        const id = editing.block.id;
         finish();
+        document
+          .querySelector(`.worksheet [data-block="${id}"]`)
+          ?.focus({ preventScroll: true });
       } else if (mod && ["z", "y"].includes(key)) {
         e.preventDefault();
         finish();

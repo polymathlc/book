@@ -2,26 +2,28 @@
 
 A browser-based A4 worksheet editor for Polymath Learning Centre. Paste questions, place full-resolution pictures, and download aligned worksheets as PDF, PNG, or SVG.
 
-Hosted at **https://polymathlc.github.io/book/** once GitHub Pages is enabled for this repository. The relative paths and static GitHub Pages hosting follow the CER app's deployment convention.
+Hosted at **https://polymathlc.github.io/book/**. The relative paths and static GitHub Pages hosting follow the CER app's deployment convention.
 
 ## Editing
 
 - Paste text into the question box, or press Ctrl+V / ⌘V over the page to add clipboard text or pictures. Drop or upload several images at once.
 - Add question and answer parts **a, b, c**, or edit each part label independently. An answer has a separate editable value and optional answer line.
-- Double-click a text box, answer or table cell to edit directly on the worksheet. **Enter and Shift+Enter** start a new line with the current formatting. Choose fonts, point size, bold, italic, underline, font colour, left/centre/right/justified alignment and **line spacing** in the formatting bar. Select words to format them; select a block to format the whole box.
+- Click a text box, answer or table cell to edit directly where you click. Drag across words to select them; double-click selects a word. Click the border to select the whole box and apply formatting, or drag it to move. Eight side/corner handles resize text boxes without changing font size; boxes grow to keep every line visible. A border drag gives a flowing question free placement. Escape ends typing and selects the box; F2 or Enter resumes editing. **Enter and Shift+Enter** start a new line with the current formatting. Choose fonts, point size, bold, italic, underline, font colour, left/centre/right/justified alignment and **line spacing** in the formatting bar. Select words to format them; select a block to format the whole box.
 - **Ctrl/⌘+Shift+C** copies formatting; **Ctrl/⌘+Shift+V** pastes it onto selected text or elements. Ctrl/⌘+B, I and U work while typing. The inspector's plain-text edits also preserve existing formatting.
 - Roboto is included locally with normal, bold and italic faces. Century Gothic, Helvetica, Calibri and the other system fonts use the installed font where available, with a fallback otherwise. Roboto is also embedded in SVG/PDF rendering. See `assets/fonts/LICENSE` (SIL Open Font License; Fontsource Roboto 5.3.0).
 - Insert rectangles, rounded rectangles, circles, ellipses and lines. Change fill, outline colour/thickness and corner radius, drag or resize them, and use the same alignment tools as images. Circles stay circular.
-- Insert tables with up to 50 rows and 12 columns. Double-click cells, use Tab between cells, and change rows, columns, border colour/thickness, padding and header style. Existing cells survive table resizing. Long rows, answers and text continue onto additional A4 sheets.
+- Insert tables with up to 50 rows and 12 columns. Click cells, use Tab between cells, and change rows, columns, border colour/thickness, padding and header style. Existing cells survive table resizing. Long rows, answers and text continue onto additional A4 sheets.
 - **Keyboard shortcuts** lets you assign insert commands to your own key combinations. Settings travel with the book and persist in the device/cloud draft. Editing and browser shortcuts are protected from accidental replacement.
 - Images start in free placement. Drag anywhere within the worksheet's content area; drag a corner to resize while preserving aspect ratio. Moving and resizing never re-encodes the original image.
 - Enable **Free placement** for text, Math Habit banners, or other elements to position them independently. Use the Elements list to reorder items in normal text flow.
 - Shift-click to select several elements. Align edges or centres, distribute spacing, or move them together. Use Snap for grid and alignment guides; hold Alt during a drag to bypass snapping.
 - Use arrow keys to nudge, Shift+arrow for larger movements, Ctrl+D / ⌘D to duplicate, Delete to remove, and Ctrl+Z / ⌘Z to undo. Lock elements to protect their position.
-- Add any number of small **Math Habit** banners. Each has its own number, title, order, and optional position.
+- Add any number of small **Math Habit** banners. Each has its own number, title, order, and optional position. Double-click the title or number to edit it on the page, with font, colour, line breaks, formatting and undo support.
 - Right-click an image and select **CER touch-up** for the original CER manual image editor. Erase, paint, fill, clone, history brush, selection, lasso, wand, move, resize, rotate, skew, straighten, line, text, crop selection, and clean-paper tools are available.
 - Restore the original image after editing. Undo/redo also applies to image changes.
 - Add pages, duplicate or delete pages, and move elements between pages with the inspector. Text flow continues onto additional A4 sheets when needed.
+- Right-click an element and choose **Repeat on future pages…**. Set exact X/Y coordinates in millimetres from the top-left of the A4 page, within its content area. Repetition begins on the source page and includes later pages and continuation sheets. **Same content on every page** shares one editable source. **Same position, independent content** creates blank text/answer boxes, table cells and question-image placeholders that you can fill separately; shapes keep their appearance. Paste an original image into a selected image placeholder, or use **Replace image**.
+- Choose **Make this copy independent** to detach just that printed-page copy, keeping its position and content. Other copies stay shared. **Use repeated version** restores a shared copy; **Reset from layout** clears an independent layout copy. Deleting an independent copy suppresses it on that sheet. All changes support undo and survive device/cloud autosave and saved projects. **Keep flowing questions clear** reserves space around repeated elements; turn it off for overlays. Stopping repetition preserves independently edited copies.
 
 ## Output and storage
 
@@ -59,7 +61,7 @@ npm test
 npm run serve
 ```
 
-Open http://127.0.0.1:4173. `tests/core.test.js` verifies project/image preservation, multiple banners, alignment, SVG/import safety, line wrapping, the diagram's 24-dot answer, and A4 PDF structure. `npm install --no-save playwright@1.62.1`, `npx playwright install chromium`, and `npm run test:browser` run the browser acceptance suite. These checks cover paste, drag/resize, touch-up apply/undo, overflow pages, export alignment, draft/project persistence, selected-word formatting, Enter/Shift+Enter, line spacing, shapes, table cells, custom shortcuts, AI page context, cloud save/load, revision conflicts and offline recovery. AI and cloud acceptance tests use Firebase service doubles, not live accounts or billable provider calls. Live account permissions/provider availability must be checked in the signed-in app.
+Open http://127.0.0.1:4173. `tests/core.test.js` verifies project/image preservation, multiple banners, alignment, SVG/import safety, line wrapping, the diagram's 24-dot answer, and A4 PDF structure. `npm install --no-save playwright@1.62.1`, `npx playwright install chromium`, and `npm run test:browser` run the browser acceptance suite. These checks cover paste, drag/resize, touch-up apply/undo, overflow pages, export alignment, draft/project persistence, selected-word formatting, Enter/Shift+Enter, line spacing, shapes, table cells, custom shortcuts, AI page context, cloud save/load, revision conflicts and offline recovery. The additional text-box and page-template acceptance checks cover precise single-click caret placement, native word/drag selection, box switching, frame resizing, banner editing, exact repeat positions, per-sheet independent copies, blank question/image layouts, original image replacement, reserved flow space and copy identities after reload. AI and cloud acceptance tests use Firebase service doubles, not live accounts or billable provider calls. Live account permissions/provider availability must be checked in the signed-in app.
 
 ## Deployment
 

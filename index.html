@@ -272,6 +272,57 @@
         ><button id="confirm-ok" class="primary">Continue</button>
       </div>
     </dialog>
+    <dialog id="repeat-dialog">
+      <h2>Repeat element on future pages</h2>
+      <p id="repeat-name"></p>
+      <p>
+        Use this position on continuation sheets and later pages. Choose shared
+        content, or independent boxes that you can fill with different
+        questions.
+      </p>
+      <div class="field-pair">
+        <label
+          >X from page left (mm)<input
+            id="repeat-x"
+            type="number"
+            step="0.1"
+            required
+        /></label>
+        <label
+          >Y from page top (mm)<input
+            id="repeat-y"
+            type="number"
+            step="0.1"
+            required
+        /></label>
+      </div>
+      <label
+        >Repeat behaviour<select id="repeat-mode">
+          <option value="shared">Same content on every page</option>
+          <option value="independent">
+            Same position, independent content
+          </option>
+        </select></label
+      >
+      <p class="small-help">
+        Independent mode starts with blank text, answers, table cells or
+        question image placeholders. Shapes keep their appearance. Every copy
+        can be edited separately.
+      </p>
+      <p class="small-help">
+        Measured from the top-left of the A4 page, within the worksheet content
+        area. You can also drag the repeated element to adjust its position.
+      </p>
+      <label class="check-field"
+        ><input id="repeat-clear" type="checkbox" checked />Keep flowing
+        questions clear of this element</label
+      >
+      <p id="repeat-error" class="form-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button id="repeat-cancel">Cancel</button
+        ><button id="repeat-save" class="primary">Repeat element</button>
+      </div>
+    </dialog>
     <dialog id="shortcut-dialog" class="wide-dialog">
       <h2>Make the keyboard yours</h2>
       <p>
@@ -329,7 +380,7 @@
     </dialog>
     <dialog id="table-dialog">
       <h2>Insert a table</h2>
-      <p>Double-click any cell to type. Use Tab to move between cells.</p>
+      <p>Click any cell to type. Use Tab to move between cells.</p>
       <div class="field-pair">
         <label
           >Rows<input

@@ -20,6 +20,8 @@ export function pageContext(project, page, focusId = "") {
         return `${prefix} MATH HABIT ${b.number}: ${b.title}`;
       if (b.type === "table")
         return `${prefix} TABLE (${b.rows} rows × ${b.cols} columns):\n${b.cells.map((row) => row.map((cell) => cell.text.replace(/\n/g, " / ")).join(" | ")).join("\n")}`;
+      if (b.type === "image" && b.templatePlaceholder)
+        return `${prefix} BLANK QUESTION IMAGE PLACEHOLDER: No question image has been supplied for this box. Do not assume it contains the source page's question.`;
       if (b.type === "image")
         return `${prefix} PICTURE: ${b.name || "Question image"}${b.caption ? ` — ${b.caption}` : ""}. Read it in the attached page image.`;
       if (b.type === "shape")

@@ -10,6 +10,10 @@ import {
   wrapText,
   CONTENT_W,
   CONTENT_H,
+  pageBlocks,
+  repeatSources,
+  independentCopy,
+  flowBands,
   buildPdf,
 } from "../core.js";
 test("multiple habits and original image bytes survive a project round-trip", () => {
@@ -100,4 +104,91 @@ test("PDF has one A4 page per canvas and correct byte offsets", async () => {
   );
   const start = Number(text.match(/startxref\n(\d+)/)[1]);
   assert.equal(new TextDecoder().decode(bytes.slice(start, start + 4)), "xref");
+});
+test("page templates begin at the source page and independent content stays separate", () => {
+  const p = blankProject(),
+    banner = makeBlock("habit", {
+      repeatOnPages: true,
+      floating: true,
+      x: 20,
+      y: 40,
+      w: 500,
+    });
+  const question = makeBlock("text", {
+    repeatOnPages: true,
+    repeatMode: "independent",
+    floating: true,
+    text: "Original question",
+    fontFamily: "Roboto",
+    color: "#21536a",
+    boxHeight: 80,
+    w: 400,
+    x: 30,
+    y: 120,
+  });
+  p.pages = [
+    { id: "before", blocks: [] },
+    { id: "source", blocks: [banner, question] },
+    { id: "future", blocks: [] },
+  ];
+  assert.deepEqual(repeatSources(p, "before"), []);
+  assert.deepEqual(
+    pageBlocks(p, "future").map((b) => b.id),
+    [banner.id],
+  );
+  const copy = independentCopy(question, { blank: true });
+  p.pages[2].blocks.push(copy);
+  copy.text = "Different question";
+  assert.equal(question.text, "Original question");
+  assert.equal(copy.x, question.x);
+  assert.equal(copy.y, question.y);
+  assert.equal(copy.fontFamily, question.fontFamily);
+  assert.equal(copy.boxHeight, question.boxHeight);
+  assert.notEqual(copy.id, question.id);
+  const detached = independentCopy(banner, { sheetIndex: 1 });
+  p.pages[2].blocks.push(detached);
+  p.pages[2].repeatSuppressed = [{ sourceId: banner.id, sheetIndex: 1 }];
+  const restored = validateProject(JSON.parse(JSON.stringify(p)));
+  assert.equal(restored.pages[1].blocks[1].repeatMode, "independent");
+  assert.equal(restored.pages[2].blocks[0].text, "Different question");
+  assert.equal(restored.pages[2].blocks[1].sheetIndex, 1);
+  assert.deepEqual(
+    restored.pages[2].repeatSuppressed,
+    p.pages[2].repeatSuppressed,
+  );
+});
+test("blank independent images preserve frame ratio while full copies preserve source bytes", () => {
+  const d = dotDiagram(),
+    source = makeBlock("image", {
+      src: d.src,
+      originalSrc: d.src,
+      naturalWidth: d.width,
+      naturalHeight: d.height,
+      w: 300,
+      x: 25,
+      y: 80,
+    });
+  const full = independentCopy(source),
+    blank = independentCopy(source, { blank: true });
+  assert.equal(full.src, d.src);
+  assert.equal(full.originalSrc, d.src);
+  assert.notEqual(blank.src, d.src);
+  assert.equal(blank.templatePlaceholder, true);
+  assert.equal(
+    blank.naturalWidth / blank.naturalHeight,
+    source.naturalWidth / source.naturalHeight,
+  );
+  assert.ok(!atob(blank.src.split(",")[1]).includes("<circle"));
+});
+test("flowing questions have clear vertical bands around overlapping page templates", () => {
+  assert.deepEqual(flowBands([]), [{ y: 0, height: CONTENT_H }]);
+  const bands = flowBands([
+    { y: 0, h: 40 },
+    { y: 30, h: 50 },
+    { y: 200, h: 80 },
+  ]);
+  assert.deepEqual(bands, [
+    { y: 94, height: 92 },
+    { y: 294, height: CONTENT_H - 294 },
+  ]);
 });
