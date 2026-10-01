@@ -1,0 +1,12 @@
+{
+  "name": "polymath-book-studio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/core.test.js",
+    "check": "node --check app.js && node --check core.js && node --check cer-touchup.js && node --check tests/browser.test.cjs",
+    "serve": "python3 -m http.server 4173 --bind 127.0.0.1",
+    "test:browser": "node tests/browser.test.cjs"
+  }
+}
