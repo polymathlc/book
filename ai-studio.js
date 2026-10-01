@@ -4,7 +4,7 @@ import {
   parseAnswerResult,
   pageFingerprint,
 } from "./ai-core.js";
-import { makeBlock, uid } from "./core.js";
+import { makeBlock, uid, pageBlocks } from "./core.js";
 
 import {
   polymathServices as services,
@@ -218,8 +218,16 @@ export function createAIStudio(api) {
     result = null,
     generatedFingerprint = "",
     generatedPageId = "";
-  const sourcePage = () =>
-    api.project().pages.find((p) => p.id === sourcePageId);
+  const effectivePage = (id) => {
+    const page = api.project().pages.find((p) => p.id === id);
+    return (
+      page && {
+        ...page,
+        blocks: api.pageBlocks?.(page.id) || pageBlocks(api.project(), page.id),
+      }
+    );
+  };
+  const sourcePage = () => effectivePage(sourcePageId);
   function account(s) {
     const user = s.auth.currentUser;
     $("ai-account").textContent = user
@@ -470,7 +478,7 @@ export function createAIStudio(api) {
   }
   function insert(newPage = false) {
     if (!result || result.clarification) return;
-    const page = api.project().pages.find((p) => p.id === generatedPageId);
+    const page = effectivePage(generatedPageId);
     if (
       !page ||
       pageFingerprint(api.project(), page) !== generatedFingerprint

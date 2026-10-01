@@ -902,6 +902,115 @@ dialog::backdrop {
   bottom: -9px;
   cursor: nwse-resize;
 }
+.selection-handle.n,
+.selection-handle.s {
+  left: calc(50% - 4.5px);
+  cursor: ns-resize;
+}
+.selection-handle.n {
+  top: -9px;
+}
+.selection-handle.s {
+  bottom: -9px;
+}
+.selection-handle.e,
+.selection-handle.w {
+  top: calc(50% - 4.5px);
+  cursor: ew-resize;
+}
+.selection-handle.e {
+  right: -9px;
+}
+.selection-handle.w {
+  left: -9px;
+}
+.selection-frame {
+  position: absolute;
+  inset: -5px;
+  border: 1px solid #239ba5;
+  pointer-events: none;
+  display: none;
+  z-index: 90;
+}
+.sheet-block:is(.selected, :hover) > .selection-frame {
+  display: block;
+}
+.sheet-block:has(> .selection-frame):is(.selected, :hover) {
+  outline: none;
+}
+.editing-block > .selection-frame {
+  border-style: dashed;
+}
+.selection-edge {
+  position: absolute;
+  pointer-events: auto;
+  cursor: move;
+  touch-action: none;
+}
+.selection-edge.n,
+.selection-edge.s {
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+.selection-edge.n {
+  top: -4px;
+}
+.selection-edge.s {
+  bottom: -4px;
+}
+.selection-edge.e,
+.selection-edge.w {
+  top: 0;
+  bottom: 0;
+  width: 8px;
+}
+.selection-edge.e {
+  right: -4px;
+}
+.selection-edge.w {
+  left: -4px;
+}
+.locked > .selection-frame .selection-edge {
+  cursor: default;
+}
+.repeat-badge {
+  color: #239ba5;
+  font-size: 16px;
+}
+.repeat-badge + .block-icon {
+  display: none;
+}
+#repeat-dialog input {
+  width: 100%;
+}
+#repeat-dialog select {
+  width: 100%;
+  margin-top: 6px;
+}
+.image-placeholder {
+  position: absolute;
+  inset: 0;
+  border: 1px dashed #8ba4ac;
+  display: grid;
+  place-items: center;
+  color: #718a91;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 15px;
+  background: #f8fbfc;
+  pointer-events: none;
+}
+.selection-handle {
+  touch-action: none;
+}
+.text-block.floating,
+.answer-block.floating {
+  touch-action: auto;
+}
+.worksheet-content:has(.sheet-block.selected) {
+  overflow: visible;
+}
 .dragging {
   user-select: none;
 }
@@ -998,6 +1107,8 @@ dialog::backdrop {
   overflow-wrap: anywhere;
 }
 .exporting .selection-handle,
+.exporting .selection-frame,
+.exporting .image-placeholder,
 .exporting .alignment-guide {
   visibility: hidden;
 }
@@ -1099,6 +1210,8 @@ dialog::backdrop {
 @media print {
   .measure-box,
   .selection-handle,
+  .selection-frame,
+  .image-placeholder,
   .alignment-guide,
   .context-menu,
   #annotOverlay {
@@ -1232,6 +1345,8 @@ dialog::backdrop {
   cursor: text;
   outline: none;
   text-decoration-skip-ink: auto;
+  user-select: text;
+  touch-action: auto;
 }
 .rich-textbox:empty:before {
   content: attr(data-placeholder);
@@ -1240,13 +1355,30 @@ dialog::backdrop {
   font-weight: 400;
 }
 .rich-textbox.editing-text {
-  box-shadow: 0 0 0 2px #239ba5;
   border-radius: 2px;
   background: #ffffffee;
   position: relative;
   z-index: 2;
   touch-action: auto;
   user-select: text;
+}
+.habit-number.rich-textbox {
+  flex: 0 0 43px;
+  min-height: 40px;
+  padding: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.habit-title.rich-textbox {
+  line-height: 1.35;
+  min-height: 40px;
+}
+.habit-number.rich-textbox.editing-text {
+  background: #239ba5;
+}
+.habit-block .editing-text {
+  outline: 1px dashed #239ba5;
+  outline-offset: 3px;
 }
 .editing-block {
   z-index: 500 !important;
@@ -1274,7 +1406,7 @@ dialog::backdrop {
   display: none;
 }
 .answer-block .rich-textbox.editing-text {
-  min-width: 180px;
+  min-width: min(180px, 100%);
 }
 .answer-line {
   flex-shrink: 0;
@@ -1441,6 +1573,9 @@ dialog::backdrop {
     background: none;
   }
   .editing-content {
+    overflow: hidden !important;
+  }
+  .worksheet-content:has(.sheet-block.selected) {
     overflow: hidden !important;
   }
 }

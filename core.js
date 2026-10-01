@@ -11,6 +11,8 @@ export const PAGE_W = 210 * PX_PER_MM;
 export const PAGE_H = 297 * PX_PER_MM;
 export const CONTENT_W = 186 * PX_PER_MM;
 export const CONTENT_H = 273 * PX_PER_MM - 37 - 16 * PX_PER_MM;
+export const CONTENT_X = 12 * PX_PER_MM;
+export const CONTENT_Y = CONTENT_X + 37;
 export const uid = () => "b_" + crypto.randomUUID();
 export const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 export const escapeXml = (value) =>
@@ -44,7 +46,7 @@ export function blankProject() {
 export function makeBlock(type, fields = {}) {
   const defaults = {
     text: { text: "", style: "body", align: "left", part: "" },
-    habit: { number: "01", title: "Look for a pattern" },
+    habit: { number: "01", title: "Look for a pattern", lineSpacing: 1.35 },
     image: {
       src: "",
       originalSrc: "",
@@ -92,6 +94,94 @@ export function makeBlock(type, fields = {}) {
     divider: {},
   };
   return { id: uid(), type, ...defaults[type], ...fields };
+}
+// Repeated elements keep one source, including its original image bytes.
+// They appear from the source's manual page onward; ordinary blocks remain
+// independently editable on the page that owns them.
+export function repeatSources(project, pageId) {
+  const repeated = new Map();
+  for (const page of project.pages) {
+    for (const b of page.blocks) if (b.repeatOnPages) repeated.set(b.id, b);
+    if (page.id === pageId) return [...repeated.values()];
+  }
+  return [];
+}
+export function pageBlocks(project, pageId) {
+  const page = project.pages.find((p) => p.id === pageId);
+  if (!page) return [];
+  const hidden = new Set(
+      (page.repeatSuppressed || [])
+        .filter((r) => r.sheetIndex === 0)
+        .map((r) => r.sourceId),
+    ),
+    ownIds = new Set(page.blocks.map((b) => b.id));
+  return [
+    ...page.blocks.filter((b) => !hidden.has(b.id)),
+    ...repeatSources(project, pageId).filter(
+      (b) =>
+        b.repeatMode !== "independent" &&
+        !ownIds.has(b.id) &&
+        !hidden.has(b.id),
+    ),
+  ];
+}
+export function independentCopy(
+  source,
+  { blank = false, sheetIndex = 0 } = {},
+) {
+  const copy = {
+    ...clone(source),
+    id: uid(),
+    repeatOnPages: false,
+    repeatedFrom: source.id,
+    sheetIndex,
+  };
+  if (blank) {
+    if (copy.type === "text") {
+      copy.text = "";
+      copy.runs = [];
+    }
+    if (copy.type === "answer") {
+      copy.value = "";
+      copy.runs = [];
+    }
+    if (copy.type === "habit") {
+      copy.title = "";
+      copy.titleRuns = [];
+    }
+    if (copy.type === "table")
+      for (const row of copy.cells)
+        for (const cell of row) {
+          cell.text = "";
+          cell.runs = [];
+        }
+    if (copy.type === "image") {
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${copy.naturalWidth}" height="${copy.naturalHeight}" viewBox="0 0 ${copy.naturalWidth} ${copy.naturalHeight}"></svg>`;
+      copy.src = copy.originalSrc = "data:image/svg+xml;base64," + btoa(svg);
+      copy.originalWidth = copy.naturalWidth;
+      copy.originalHeight = copy.naturalHeight;
+      copy.caption = "";
+      copy.name = "Question image placeholder";
+      copy.templatePlaceholder = true;
+    }
+  }
+  return copy;
+}
+export function flowBands(rectangles, gap = 14) {
+  const occupied = rectangles
+    .map((r) => ({
+      start: clamp(r.y - gap, 0, CONTENT_H),
+      end: clamp(r.y + r.h + gap, 0, CONTENT_H),
+    }))
+    .sort((a, b) => a.start - b.start);
+  const bands = [];
+  let end = 0;
+  for (const r of occupied) {
+    if (r.start > end) bands.push({ y: end, height: r.start - end });
+    end = Math.max(end, r.end);
+  }
+  if (end < CONTENT_H) bands.push({ y: end, height: CONTENT_H - end });
+  return bands;
 }
 export function isImageData(src) {
   return (
@@ -159,6 +249,19 @@ export function validateProject(input) {
         !pageIds.has(p.id)
           ? (pageIds.add(p.id), p.id)
           : uid(),
+      repeatSuppressed: Array.isArray(p.repeatSuppressed)
+        ? p.repeatSuppressed
+            .slice(0, 3000)
+            .filter(
+              (r) =>
+                r &&
+                /^[\w-]{1,80}$/.test(r.sourceId) &&
+                Number.isInteger(r.sheetIndex) &&
+                r.sheetIndex >= 0 &&
+                r.sheetIndex <= 1000,
+            )
+            .map((r) => ({ sourceId: r.sourceId, sheetIndex: r.sheetIndex }))
+        : [],
       blocks: p.blocks.map((b) => {
         if (
           ![
@@ -194,14 +297,34 @@ export function validateProject(input) {
             v[k] = str(b[k], ["text", "value"].includes(k) ? 100000 : 500);
         v.part = str(b.part, 12).replace(/[()]/g, "");
         Object.assign(v, cleanFormat(b));
-        v.lineSpacing = num(b.lineSpacing, 0.8, 4, 1.6);
+        v.lineSpacing = num(
+          b.lineSpacing,
+          0.8,
+          4,
+          b.type === "habit" ? 1.35 : 1.6,
+        );
         if (b.type === "text" || b.type === "answer")
           v.runs = normaliseRuns(
             b.type === "answer" ? v.value : v.text,
             b.runs,
           );
+        if (b.type === "habit")
+          for (const key of ["title", "number"])
+            v[key + "Runs"] = normaliseRuns(v[key], b[key + "Runs"]);
         v.showLine = b.showLine !== false;
-        v.floating = !!b.floating;
+        v.repeatOnPages = !!b.repeatOnPages;
+        v.repeatKeepClear = b.repeatKeepClear !== false;
+        v.repeatMode =
+          b.repeatMode === "independent" ? "independent" : "shared";
+        if (
+          typeof b.repeatedFrom === "string" &&
+          /^[\w-]{1,80}$/.test(b.repeatedFrom)
+        )
+          v.repeatedFrom = b.repeatedFrom;
+        if (Number.isInteger(b.sheetIndex))
+          v.sheetIndex = Math.round(clamp(b.sheetIndex, 0, 1000));
+        v.templatePlaceholder = !!b.templatePlaceholder;
+        v.floating = !!b.floating || v.repeatOnPages;
         v.x = num(b.x, 0, CONTENT_W, 0);
         v.y = num(b.y, 0, CONTENT_H, 0);
         v.w = num(b.w, 40, CONTENT_W, 300);
@@ -214,6 +337,8 @@ export function validateProject(input) {
           ? b.align
           : "left";
         v.height = num(b.height, 20, CONTENT_H, 180);
+        if (["text", "answer"].includes(b.type) && b.boxHeight !== undefined)
+          v.boxHeight = num(b.boxHeight, 0, CONTENT_H, 0);
         v.ruled = !!b.ruled;
         if (b.type === "shape") {
           v.kind = [
