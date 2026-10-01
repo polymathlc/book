@@ -1129,3 +1129,354 @@ dialog::backdrop {
   outline: 2px solid #239ba5;
   outline-offset: 5px;
 }
+/* On-page text, drawing and table tools share the printable A4 layout. */
+@font-face {
+  font-family: Roboto;
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/fonts/roboto-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: Roboto;
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/fonts/roboto-latin-700-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: Roboto;
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url("assets/fonts/roboto-latin-400-italic.woff2") format("woff2");
+}
+@font-face {
+  font-family: Roboto;
+  font-style: italic;
+  font-weight: 700;
+  font-display: swap;
+  src: url("assets/fonts/roboto-latin-700-italic.woff2") format("woff2");
+}
+.format-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+  padding: 9px 20px;
+  background: #fff;
+  border-block: 1px solid #e0e9eb;
+  flex-shrink: 0;
+  z-index: 4;
+}
+.format-toolbar button {
+  min-width: 32px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.format-toolbar select {
+  width: 138px;
+  padding: 6px;
+  font-size: 12px;
+}
+.format-toolbar input[type="color"] {
+  width: 30px;
+  height: 30px;
+  padding: 2px;
+  border: 1px solid #d7e4e6;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.format-toolbar button[aria-pressed="true"] {
+  background: #edf6f6;
+  color: #15757e;
+  border-color: #239ba5;
+}
+.size-control {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: #718a91;
+}
+.size-control input {
+  width: 57px;
+  padding: 6px;
+  font-size: 12px;
+}
+.toolbar-divider {
+  width: 1px;
+  height: 20px;
+  background: #dbe6e8;
+  margin: 0 2px;
+}
+.text-block {
+  display: flex;
+  gap: 10px;
+}
+.part-label {
+  min-width: 26px;
+  flex-shrink: 0;
+  font-weight: 600;
+  padding-top: 1px;
+}
+.rich-textbox {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  min-height: 1.6em;
+  flex: 1;
+  line-height: 1.6;
+  font-weight: inherit;
+  cursor: text;
+  outline: none;
+  text-decoration-skip-ink: auto;
+}
+.rich-textbox:empty:before {
+  content: attr(data-placeholder);
+  color: #9dafb4;
+  font-size: 12px;
+  font-weight: 400;
+}
+.rich-textbox.editing-text {
+  box-shadow: 0 0 0 2px #239ba5;
+  border-radius: 2px;
+  background: #ffffffee;
+  position: relative;
+  z-index: 2;
+  touch-action: auto;
+  user-select: text;
+}
+.editing-block {
+  z-index: 500 !important;
+}
+.worksheet-content.editing-content {
+  overflow: visible;
+}
+.answer-block {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 10px;
+}
+.answer-block .rich-textbox {
+  flex: 0 1 auto;
+  min-width: 50px;
+  max-width: 100%;
+  font-size: inherit;
+}
+.answer-block:has(.rich-textbox:not(:empty)) .rich-textbox {
+  flex: 1;
+}
+.answer-block .rich-textbox:empty:not(.editing-text) {
+  display: none;
+}
+.answer-block .rich-textbox.editing-text {
+  min-width: 180px;
+}
+.answer-line {
+  flex-shrink: 0;
+}
+.shape-block {
+  line-height: 0;
+}
+.shape-art {
+  display: block;
+  pointer-events: none;
+}
+.shape-palette {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  margin-top: 7px;
+}
+.shape-palette[hidden] {
+  display: none;
+}
+.worksheet-table {
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+  color: #203c44;
+  font-weight: 400;
+  font-size: inherit;
+}
+.worksheet-table td {
+  border: var(--table-line, 1px) solid var(--table-border, #8ba4ac);
+  vertical-align: top;
+  min-width: 0;
+}
+.worksheet-table .table-header td {
+  background: #edf6f6;
+  font-weight: 700;
+}
+.worksheet-table .rich-textbox {
+  min-height: 1.6em;
+}
+.table-block:not(.floating) {
+  max-width: 100%;
+}
+.wide-dialog {
+  max-width: min(720px, 94vw);
+  width: 720px;
+  max-height: 90dvh;
+  overflow-y: auto;
+}
+.shortcut-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 20px;
+}
+.shortcut-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 7px;
+}
+.shortcut-row label {
+  flex: 1;
+}
+.shortcut-row input {
+  width: 100%;
+  cursor: pointer;
+}
+.shortcut-row button {
+  padding: 8px;
+  font-size: 11px;
+}
+.form-error {
+  color: #ae2b53;
+  min-height: 1.5em;
+}
+.ai-button {
+  margin: 10px 0 6px;
+  background: #f2f2fa;
+  color: #525085;
+  border-color: #ddddef;
+}
+.ai-account {
+  background: #edf6f6;
+  padding: 9px 12px;
+  margin-bottom: 10px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+.ai-dialog label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 10px 0;
+}
+.ai-dialog textarea {
+  width: 100%;
+  resize: vertical;
+}
+.ai-dialog .panel-heading h2 {
+  margin: 0;
+}
+.ai-context {
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 12px;
+  background: #f6f8f9;
+  padding: 12px;
+}
+.ai-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ai-images img {
+  width: 70px;
+  height: 90px;
+  object-fit: contain;
+  background: #fff;
+  border: 1px solid #e0e9eb;
+}
+.ai-result {
+  padding: 12px;
+  background: #f7fafa;
+  border: 1px solid #d7e4e6;
+  border-radius: 8px;
+  margin: 12px 0;
+}
+.ai-result h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+.ai-result textarea {
+  min-height: 55px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.ai-warning {
+  padding: 10px;
+  border-left: 3px solid #c57a22;
+  background: #fff8ee;
+  white-space: pre-wrap;
+}
+#ai-status {
+  font-size: 12px;
+  color: #718a91;
+  white-space: pre-wrap;
+}
+@media (max-width: 650px) {
+  .format-toolbar {
+    padding: 8px;
+  }
+  .shortcut-fields {
+    grid-template-columns: 1fr;
+  }
+}
+@media print {
+  .format-toolbar,
+  .rich-textbox:empty:before {
+    display: none !important;
+  }
+  .rich-textbox.editing-text {
+    box-shadow: none;
+    background: none;
+  }
+  .editing-content {
+    overflow: hidden !important;
+  }
+}
+.exporting .rich-textbox:empty:before {
+  display: none;
+}
+#cloud-status {
+  font-size: 11px;
+  color: #718a91;
+  max-width: 165px;
+}
+.cloud-list {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+.cloud-book {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px;
+  gap: 12px;
+  border: 1px solid #dbe6e8;
+  border-radius: 8px;
+  background: #fafcfc;
+}
+.cloud-book div {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.cloud-book strong {
+  overflow-wrap: anywhere;
+  font-size: 14px;
+}
+.cloud-book span {
+  font-size: 11px;
+  color: #718a91;
+}

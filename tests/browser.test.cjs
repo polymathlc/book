@@ -45,6 +45,11 @@ const { chromium } = require("playwright");
     });
     page.on("pageerror", (e) => errors.push(e.message));
     const base = `http://127.0.0.1:${server.address().port}`;
+    await page.route("https://www.gstatic.com/**", (route) => route.abort());
+    if (process.env.BOOK_FEATURES_ONLY) {
+      await require("./editor-features.cjs")(browser, base, output);
+      return;
+    }
     await page.goto(base);
     await page.waitForFunction(() => window.BookStudio);
     const state = () => page.evaluate(() => window.BookStudio.getProject());
@@ -320,6 +325,7 @@ const { chromium } = require("playwright");
     await page.selectOption("#zoom", "fit");
     await page.screenshot({ path: path.join(output, "mobile.png") });
     assert.deepEqual(errors, []);
+    await require("./editor-features.cjs")(browser, base, output);
     console.log(
       "Browser acceptance passed: paste, native pixels, multiple habits, drag/resize/align, CER edit/undo, long-page flow, A4 PDF/SVG, mobile, autosave, project round-trip.",
     );

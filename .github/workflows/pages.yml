@@ -27,8 +27,8 @@ jobs:
       - name: Prepare static site
         run: |
           mkdir -p _site/assets
-          cp index.html styles.css app.js core.js cer-touchup.js _site/
-          cp assets/logo.png _site/assets/
+          cp index.html styles.css app.js core.js formatting.js rich-editor.js ai-core.js ai-studio.js polymath-services.js cloud-store.js cloud-sync.js cer-touchup.js _site/
+          cp -R assets/. _site/assets/
           touch _site/.nojekyll
       - uses: actions/upload-pages-artifact@v3
         with:
