@@ -273,3 +273,24 @@ export function cleanShortcuts(input) {
       bindings[key] = canonicalShortcut(input[key]) ?? bindings[key];
   return shortcutError(bindings) ? { ...DEFAULT_SHORTCUTS } : bindings;
 }
+
+// Fractions such as 2/5 are drawn stacked (numerator over denominator) while the
+// stored text stays "2/5", so editing, search, AI and exports keep plain text.
+// Dates (3/4/2024), decimals (1/2.5) and things like km/h are left alone.
+const FRACTION =
+  /(?<![\w/.,])(\d{1,6})\/(\d{1,6})(?![\w/]|\.\d|\/)/g;
+export function splitFractions(text) {
+  const parts = [];
+  let last = 0;
+  for (const m of String(text).matchAll(FRACTION)) {
+    if (m.index > last) parts.push({ text: text.slice(last, m.index) });
+    parts.push({
+      text: m[0],
+      numerator: m[1],
+      denominator: m[2],
+    });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push({ text: text.slice(last) });
+  return parts;
+}

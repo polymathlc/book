@@ -34,7 +34,12 @@ import {
   shortcutError,
   cleanShortcuts,
 } from "./formatting.js";
-import { richBox, paintFormat, createRichEditor } from "./rich-editor.js";
+import {
+  richBox,
+  paintFormat,
+  createRichEditor,
+  setStackFractions,
+} from "./rich-editor.js";
 import { createAIStudio } from "./ai-studio.js";
 import { createCloudSync } from "./cloud-sync.js";
 const $ = (id) => document.getElementById(id),
@@ -183,6 +188,8 @@ function syncSettings() {
   ])
     $(id).value = project[key];
   $("snap-grid").checked = project.snap;
+  $("stack-fractions").checked = project.stackFractions !== false;
+  setStackFractions(project.stackFractions);
 }
 function select(id, extend = false, pageId) {
   typingGroup = null;
@@ -2973,6 +2980,13 @@ $("undo").onclick = undo;
 $("redo").onclick = redo;
 $("zoom").onchange = updateZoom;
 new ResizeObserver(updateZoom).observe($("preview-scroll"));
+$("stack-fractions").onchange = (e) => {
+  richEditor.finish();
+  mutate(() => {
+    project.stackFractions = e.target.checked;
+    setStackFractions(project.stackFractions);
+  });
+};
 $("snap-grid").onchange = (e) => {
   project.snap = e.target.checked;
   scheduleSave();

@@ -38,6 +38,7 @@ export function blankProject() {
     firstPage: 1,
     fontSize: 16,
     snap: true,
+    stackFractions: true,
     shortcuts: { ...DEFAULT_SHORTCUTS },
     aiGuidance: "",
     pages: [{ id: uid(), blocks: [] }],
@@ -228,6 +229,7 @@ export function validateProject(input) {
   out.fontSize = num(input.fontSize, 13, 20, 16);
   out.firstPage = Math.round(num(input.firstPage, 1, 9999, 1));
   out.snap = input.snap !== false;
+  out.stackFractions = input.stackFractions !== false;
   out.shortcuts = cleanShortcuts(input.shortcuts);
   out.aiGuidance = str(input.aiGuidance, 10000);
   if (typeof input.id === "string" && /^[\w-]{1,80}$/.test(input.id))

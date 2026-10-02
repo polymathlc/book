@@ -9,7 +9,11 @@ import {
   replaceRuns,
   formatAt,
   validColour,
+  splitFractions,
 } from "./formatting.js";
+
+let stackFractions = true;
+export const setStackFractions = (on) => (stackFractions = on !== false);
 
 export function paintFormat(node, format = {}) {
   if (format.fontFamily) node.style.fontFamily = fontStack(format.fontFamily);
@@ -26,7 +30,30 @@ export function paintRuns(node, text, runs, base = {}) {
   node.replaceChildren();
   for (const run of normaliseRuns(text, runs)) {
     const span = document.createElement("span");
-    span.textContent = run.text;
+    const parts = stackFractions ? splitFractions(run.text) : [];
+    if (parts.some((part) => part.numerator)) {
+      // The visible "/" is hidden, but stays in the text so the caret, selection
+      // offsets and copied text still read "2/5".
+      for (const part of parts) {
+        if (!part.numerator) {
+          span.append(document.createTextNode(part.text));
+          continue;
+        }
+        const frac = document.createElement("span"),
+          top = document.createElement("span"),
+          slash = document.createElement("span"),
+          bottom = document.createElement("span");
+        frac.className = "frac";
+        top.className = "frac-n";
+        slash.className = "frac-s";
+        bottom.className = "frac-d";
+        top.textContent = part.numerator;
+        slash.textContent = "/";
+        bottom.textContent = part.denominator;
+        frac.append(top, slash, bottom);
+        span.append(frac);
+      }
+    } else span.textContent = run.text;
     paintFormat(span, { ...base, ...run });
     node.append(span);
   }
