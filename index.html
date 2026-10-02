@@ -35,7 +35,15 @@
       <aside class="composer">
         <div class="panel-heading">
           <span class="eyebrow">YOUR BOOK</span
-          ><button id="add-page" class="mini">+ Page</button>
+          ><span class="panel-heading-actions"
+            ><button
+              id="arrange-pages"
+              class="mini"
+              title="See thumbnails of every page and drag them into order"
+            >
+              ▦ Arrange pages</button
+            ><button id="add-page" class="mini">+ Page</button></span
+          >
         </div>
         <div
           id="page-list"
@@ -292,6 +300,23 @@
       </aside>
     </main>
     <div id="toast" role="status" aria-live="polite"></div>
+    <dialog id="pages-dialog" class="pages-dialog">
+      <div class="panel-heading">
+        <h2>Arrange pages</h2>
+        <button id="pages-close" class="primary">Done</button>
+      </div>
+      <p id="thumb-summary" class="small-help" role="status"></p>
+      <p class="small-help">
+        Drag a thumbnail to change the order. Use ◀ ▶ or Alt+←/→ on a focused
+        page for fine control. Click to select, double-click or Enter to open.
+      </p>
+      <div
+        id="thumb-grid"
+        class="thumb-grid"
+        role="list"
+        aria-label="Page thumbnails in order"
+      ></div>
+    </dialog>
     <dialog id="confirm-dialog">
       <h2 id="confirm-title">Confirm</h2>
       <p id="confirm-message"></p>
