@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "node --check app.js && node --check core.js && node --check formatting.js && node --check rich-editor.js && node --check ai-core.js && node --check ai-studio.js && node --check polymath-services.js && node --check cloud-store.js && node --check cloud-sync.js && node --check cer-touchup.js && node --check tests/browser.test.cjs && node --check tests/editor-features.cjs && node --check tests/powerpoint-textboxes.cjs && node --check tests/firebase-mock.cjs && node --check tests/page-templates.cjs && node --check tests/text-paste.cjs && node --check tests/page-clipboard.cjs && node --check tests/page-thumbnails.cjs",
+    "check": "node --check app.js && node --check core.js && node --check formatting.js && node --check rich-editor.js && node --check ai-core.js && node --check ai-studio.js && node --check polymath-services.js && node --check cloud-store.js && node --check cloud-sync.js && node --check cer-touchup.js && node --check tests/browser.test.cjs && node --check tests/editor-features.cjs && node --check tests/powerpoint-textboxes.cjs && node --check tests/firebase-mock.cjs && node --check tests/page-templates.cjs && node --check tests/text-paste.cjs && node --check tests/page-clipboard.cjs && node --check tests/page-thumbnails.cjs && node --check tests/fractions.cjs",
     "serve": "python3 -m http.server 4173 --bind 127.0.0.1",
     "test:browser": "node tests/browser.test.cjs"
   }

@@ -12,6 +12,7 @@ import {
   shortcutError,
   DEFAULT_SHORTCUTS,
   shortcutFromEvent,
+  splitFractions,
 } from "../formatting.js";
 import { blankProject, makeBlock, validateProject } from "../core.js";
 test("selected text changes style without changing adjacent text or newline formatting", () => {
@@ -172,4 +173,23 @@ test("shortcut keys work with shifted digits and macOS Option characters", () =>
     shortcutFromEvent({ key: "†", code: "KeyT", metaKey: true, altKey: true }),
     "Mod+Alt+T",
   );
+});
+
+test("fractions are found as numerator/denominator pairs and nothing else", () => {
+  const found = (text) =>
+    splitFractions(text)
+      .filter((p) => p.numerator)
+      .map((p) => `${p.numerator}/${p.denominator}`);
+  assert.deepEqual(found("2/5 of the beads and 2/9 now"), ["2/5", "2/9"]);
+  assert.deepEqual(found("3 1/2 cups, then (3/4)."), ["1/2", "3/4"]);
+  assert.deepEqual(found("It is 1/4."), ["1/4"]);
+  assert.deepEqual(found("Date 3/4/2024 and 1/2.5 and km/h and A/B"), []);
+  assert.deepEqual(found("a1/2 12/ /3"), []);
+  const parts = splitFractions("Take 2/5 now");
+  assert.equal(parts.map((p) => p.text).join(""), "Take 2/5 now");
+  assert.deepEqual(
+    validateProject({ ...blankProject(), stackFractions: false }).stackFractions,
+    false,
+  );
+  assert.equal(validateProject(blankProject()).stackFractions, true);
 });

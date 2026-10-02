@@ -1735,3 +1735,33 @@ dialog::backdrop {
 .thumb-tools button:disabled {
   opacity: 0.35;
 }
+
+/* Stacked fractions: numerator over a bar over denominator. The "/" stays in
+   the text (zero-size) so editing and copying still read "2/5". */
+.frac {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  margin: 0 0.14em;
+  text-align: center;
+  white-space: nowrap;
+}
+.frac-n,
+.frac-d {
+  display: block;
+  font-size: 0.86em;
+  line-height: 1.12;
+  padding: 0 0.16em;
+}
+.frac-n {
+  border-bottom: 1.5px solid currentColor;
+}
+.frac-s {
+  display: block;
+  font-size: 0;
+  line-height: 0;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
