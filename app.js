@@ -715,7 +715,32 @@ function render({ inspector = true, sheets = true } = {}) {
         "page-tab" + (p.id === activePage ? " active" : ""),
         String(i + 1).padStart(2, "0"),
       );
-      n.title = "Edit page " + (i + 1);
+      n.title = "Edit page " + (i + 1) + " · drag to change the page order";
+      n.draggable = true;
+      n.dataset.pageTab = p.id;
+      n.ondragstart = (e) => {
+        e.dataTransfer.setData("application/x-book-page", p.id);
+        e.dataTransfer.effectAllowed = "move";
+        n.classList.add("dragging-page");
+      };
+      n.ondragend = () => clearPageDrop();
+      n.ondragover = (e) => {
+        if (!e.dataTransfer.types.includes("application/x-book-page")) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        const after = dropAfter(e, n);
+        clearPageDrop(false);
+        n.classList.add(after ? "drop-after" : "drop-before");
+      };
+      n.ondragleave = () => n.classList.remove("drop-before", "drop-after");
+      n.ondrop = (e) => {
+        const source = e.dataTransfer.getData("application/x-book-page");
+        if (!source) return;
+        e.preventDefault();
+        const after = dropAfter(e, n);
+        clearPageDrop();
+        reorderPage(source, p.id, after);
+      };
       n.onclick = () => {
         activePage = p.id;
         selected = [];
@@ -727,6 +752,10 @@ function render({ inspector = true, sheets = true } = {}) {
       return n;
     }),
   );
+  const activeIndex = project.pages.findIndex((p) => p.id === activePage);
+  $("page-earlier").disabled = activeIndex <= 0;
+  $("page-later").disabled = activeIndex >= project.pages.length - 1;
+  updatePasteButtons();
   $("block-count").textContent = pageBlocks(project, activePage).length;
   $("block-list").replaceChildren(
     ...pageBlocks(project, activePage).map((b) => {
@@ -1323,6 +1352,9 @@ function renderInspector() {
     button("↑ Earlier", () => reorder(b.id, -1)),
     button("↓ Later", () => reorder(b.id, 1)),
     button("Duplicate", duplicateSelected),
+    button("Copy", () => copyElements(false)),
+    button("Cut", () => copyElements(true)),
+    button("Paste on this page", () => pasteElements()),
     button("Delete", deleteSelected, "danger"),
   );
   root.append(actions);
@@ -1713,6 +1745,178 @@ function duplicateSelected() {
     selected = ids;
   });
 }
+// ---- Element clipboard (PowerPoint-style copy, cut and paste) -------------
+// Copied elements keep every field: text, runs (font, size, colour, bold,
+// italic, underline), alignment, line spacing, table cells, shape styling and
+// original image bytes. Elements in text flow are measured when copied and
+// pasted as freely placed elements, so they land at the exact same spot on the
+// destination page. Pasting back onto the page they came from offsets the copy
+// slightly (as PowerPoint does) so it does not hide the original.
+const ELEMENT_MIME = "application/x-book-studio-elements",
+  ELEMENT_TOKEN = "Polymath Book Studio elements ";
+let elementClipboard = null,
+  copyEventHandled = false;
+function measuredPosition(id) {
+  const nodes = Array.from(
+      document.querySelectorAll(`.sheet-block[data-block="${id}"]`),
+    ),
+    n =
+      nodes.find((x) => x.closest(".worksheet")?.dataset.page === activePage) ||
+      nodes[0],
+    c = n?.parentElement;
+  if (!n || !c) return null;
+  const a = n.getBoundingClientRect(),
+    b = c.getBoundingClientRect();
+  return {
+    x: (a.left - b.left) / zoom,
+    y: (a.top - b.top) / zoom,
+    w: n.offsetWidth,
+  };
+}
+function captureElements({ cut = false } = {}) {
+  richEditor.finish();
+  const ids = selected.filter((id) => blockOf(id));
+  if (!ids.length) return null;
+  const blocks = ids.map((id) => {
+    const b = clone(blockOf(id));
+    if (!b.floating && heightOf(b) <= CONTENT_H) {
+      const spot = measuredPosition(id);
+      if (spot) Object.assign(b, spot, { floating: true });
+    }
+    b.repeatOnPages = false;
+    for (const key of [
+      "repeatedFrom",
+      "repeatMode",
+      "repeatKeepClear",
+      "sheetIndex",
+    ])
+      delete b[key];
+    return b;
+  });
+  elementClipboard = {
+    token: uid(),
+    sourcePage: activePage,
+    blocks,
+    cut,
+    pastes: 0,
+  };
+  updatePasteButtons();
+  return elementClipboard;
+}
+function writeElementClipboard(data, entry) {
+  data.setData("text/plain", ELEMENT_TOKEN + entry.token);
+  data.setData(
+    ELEMENT_MIME,
+    JSON.stringify({
+      token: entry.token,
+      sourcePage: entry.sourcePage,
+      blocks: entry.blocks,
+    }),
+  );
+}
+// Reads elements from a paste event. Elements copied in this tab come from
+// memory; elements copied in another tab or project are validated first.
+function clipboardElements(data) {
+  const text = data?.getData("text/plain") || "";
+  if (!text.startsWith(ELEMENT_TOKEN)) return null;
+  const token = text.slice(ELEMENT_TOKEN.length).trim();
+  if (elementClipboard?.token === token) return elementClipboard;
+  try {
+    const value = JSON.parse(data.getData(ELEMENT_MIME)),
+      checked = validateProject({
+        version: 1,
+        pages: [{ id: "clipboard", blocks: value.blocks }],
+      });
+    return {
+      token,
+      sourcePage: null,
+      blocks: checked.pages[0].blocks,
+      cut: false,
+      pastes: 0,
+    };
+  } catch {
+    return false;
+  }
+}
+function pasteElements(entry = elementClipboard) {
+  if (!entry?.blocks.length) {
+    toast("Copy or cut one or more elements first.");
+    return [];
+  }
+  richEditor.finish();
+  const page = currentPage(),
+    offset =
+      entry.sourcePage === page.id && !entry.cut ? 16 * ++entry.pastes : 0,
+    created = [];
+  mutate(() => {
+    for (const original of entry.blocks) {
+      const b = clone(original);
+      b.id = uid();
+      if (b.floating && offset) {
+        b.x = (b.x || 0) + offset;
+        b.y = (b.y || 0) + offset;
+        clampBlock(b);
+      }
+      page.blocks.push(b);
+      created.push(b.id);
+    }
+    selected = [...created];
+  });
+  const number = project.pages.indexOf(page) + 1;
+  toast(
+    `Pasted ${created.length} ${created.length === 1 ? "element" : "elements"} on page ${number}` +
+      (offset ? " (offset so the original stays visible)." : " in the same position."),
+  );
+  document
+    .querySelector(`.worksheet[data-page="${page.id}"] [data-block="${created[0]}"]`)
+    ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  return created;
+}
+function updatePasteButtons() {
+  $("page-paste").disabled = !elementClipboard;
+}
+// Menu and button entry point; the system clipboard also receives the
+// elements when the browser allows it, so they can be pasted into another tab.
+function copyElements(cut = false) {
+  copyEventHandled = false;
+  try {
+    document.execCommand(cut ? "cut" : "copy");
+  } catch {}
+  if (!copyEventHandled) {
+    if (!captureElements({ cut })) {
+      toast("Select an element first.");
+      return;
+    }
+    if (cut) deleteSelected();
+  }
+  toast(
+    cut
+      ? "Cut. Open any page and press Ctrl/⌘+V to paste in the same position."
+      : "Copied. Open any page and press Ctrl/⌘+V to paste in the same position.",
+  );
+}
+function handleCopyEvent(e, cut) {
+  if (
+    e.defaultPrevented ||
+    window.BookTouchup?.isOpen() ||
+    richEditor.isEditing() ||
+    e.target?.closest?.("input,textarea,select,[contenteditable=true],dialog")
+  )
+    return;
+  const selection = getSelection();
+  if (selection && !selection.isCollapsed && selection.toString().trim())
+    return;
+  if (!selected.length) return;
+  const entry = captureElements({ cut });
+  if (!entry) return;
+  e.preventDefault();
+  writeElementClipboard(e.clipboardData, entry);
+  copyEventHandled = true;
+  if (cut) deleteSelected();
+}
+document.addEventListener("copy", (e) => handleCopyEvent(e, false));
+document.addEventListener("cut", (e) => handleCopyEvent(e, true));
+$("page-paste").onclick = () => pasteElements();
 function deleteSelected() {
   mutate(() => {
     for (const id of selected) {
@@ -1738,6 +1942,51 @@ function deleteSelected() {
     selected = [];
   });
 }
+const dropAfter = (e, node) => {
+  const r = node.getBoundingClientRect();
+  return e.clientX > r.left + r.width / 2;
+};
+function clearPageDrop(clearDragging = true) {
+  for (const n of document.querySelectorAll(".page-tab"))
+    n.classList.remove(
+      "drop-before",
+      "drop-after",
+      ...(clearDragging ? ["dragging-page"] : []),
+    );
+}
+// Moves one page so it sits before or after another. Elements, repeat
+// suppression and the active page travel with the page; the page numbers on
+// the printed sheets follow the new order.
+function reorderPage(id, targetId, after = false) {
+  const from = project.pages.findIndex((p) => p.id === id),
+    target = project.pages.findIndex((p) => p.id === targetId);
+  if (from < 0 || target < 0 || id === targetId) return;
+  let to = target + (after ? 1 : 0);
+  if (from < to) to--;
+  if (to === from) return;
+  richEditor.finish();
+  mutate(() => {
+    const [page] = project.pages.splice(from, 1);
+    project.pages.splice(to, 0, page);
+  });
+  toast(
+    `Page moved to position ${to + 1}.` +
+      (project.pages.some((p) => p.blocks.some((b) => b.repeatOnPages))
+        ? " Repeated elements follow the new page order."
+        : ""),
+  );
+  document
+    .querySelector(`.worksheet[data-page="${id}"]`)
+    ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+function movePage(direction) {
+  const index = project.pages.findIndex((p) => p.id === activePage),
+    other = project.pages[index + direction];
+  if (index < 0 || !other) return;
+  reorderPage(activePage, other.id, direction > 0);
+}
+$("page-earlier").onclick = () => movePage(-1);
+$("page-later").onclick = () => movePage(1);
 function addPage() {
   mutate(() => {
     const p = { id: uid(), blocks: [] };
@@ -2266,6 +2515,11 @@ function openContext(e, id) {
         }),
     ],
     ["Duplicate", duplicateSelected],
+    ["Copy", () => copyElements(false)],
+    ["Cut", () => copyElements(true)],
+    ...(elementClipboard
+      ? [["Paste on this page", () => pasteElements()]]
+      : []),
     [
       b.locked ? "Unlock position" : "Lock position",
       () => mutate(() => (b.locked = !b.locked)),
@@ -2390,6 +2644,15 @@ function nextFreeY() {
 }
 document.addEventListener("paste", (e) => {
   if (e.defaultPrevented || window.BookTouchup?.isOpen()) return;
+  const elements = clipboardElements(e.clipboardData);
+  if (elements !== null) {
+    if (e.target.closest?.("input,textarea,select,[contenteditable=true]"))
+      return;
+    e.preventDefault();
+    if (elements) pasteElements(elements);
+    else toast("Those copied elements are no longer available. Copy them again.");
+    return;
+  }
   const content = richEditor.clipboardText(e.clipboardData);
   if (content) {
     if (e.target.closest?.("input,textarea,select,[contenteditable=true]"))
@@ -2643,6 +2906,16 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.target.closest("input,textarea,select,[contenteditable=true]")) return;
   const command = e.ctrlKey || e.metaKey;
+  if (
+    e.altKey &&
+    e.shiftKey &&
+    !command &&
+    ["ArrowLeft", "ArrowRight"].includes(e.key)
+  ) {
+    e.preventDefault();
+    movePage(e.key === "ArrowLeft" ? -1 : 1);
+    return;
+  }
   if (command && e.key.toLowerCase() === "z") {
     e.preventDefault();
     e.shiftKey ? redo() : undo();
@@ -3010,6 +3283,7 @@ window.BookStudio = {
       ids: s.items.map((i) => i.block.id),
     })),
   exportPages,
+  hasElementClipboard: () => !!elementClipboard,
 };
 
 cloudSync.start();
