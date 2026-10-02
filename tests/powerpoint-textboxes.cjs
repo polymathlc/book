@@ -282,10 +282,14 @@ module.exports = async function powerpointTextboxes(browser, base, output) {
       ),
     );
     assert.ok(habit.numberRuns.every((r) => r.color === "#ffffff"));
-    assert.equal(
-      await habitNumber.evaluate((n) => getComputedStyle(n).color),
-      "rgb(255, 255, 255)",
-    );
+    // Finishing a banner can replace its DOM node during page reflow. Query
+    // and read the current node in one browser task, rather than a stale handle.
+    await page.waitForFunction(() => {
+      const number = document.querySelector(
+        '.worksheet [data-block="b_ppt_habit"] .habit-number',
+      );
+      return number && getComputedStyle(number).color === "rgb(255, 255, 255)";
+    });
 
     // Local autosave and portable projects retain frame dimensions and banner
     // text. Selection chrome never changes the printable SVG/PDF artwork.

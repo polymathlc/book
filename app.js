@@ -2389,7 +2389,19 @@ function nextFreeY() {
   return Math.min(y, CONTENT_H * 0.6);
 }
 document.addEventListener("paste", (e) => {
-  if (window.BookTouchup?.isOpen()) return;
+  if (e.defaultPrevented || window.BookTouchup?.isOpen()) return;
+  const content = richEditor.clipboardText(e.clipboardData);
+  if (content) {
+    if (e.target.closest?.("input,textarea,select,[contenteditable=true]"))
+      return;
+    e.preventDefault();
+    const b = addBlock(makeBlock("text", content));
+    const boxes = document.querySelectorAll(
+      `.worksheet[data-page="${activePage}"] [data-block="${b.id}"] .rich-textbox`,
+    );
+    richEditor.start(Array.from(boxes).at(-1));
+    return;
+  }
   const files = Array.from(e.clipboardData?.items || [])
     .filter((i) => i.kind === "file" && i.type.startsWith("image/"))
     .map((i) => i.getAsFile())
@@ -2398,13 +2410,6 @@ document.addEventListener("paste", (e) => {
     e.preventDefault();
     if (blockOf(selected[0])?.templatePlaceholder) replacementId = selected[0];
     addFiles(files);
-    return;
-  }
-  if (e.target.closest("input,textarea,select,[contenteditable=true]")) return;
-  const text = e.clipboardData?.getData("text/plain");
-  if (text?.trim()) {
-    e.preventDefault();
-    addBlock(makeBlock("text", { text: text.trim() }));
   }
 });
 $("image-input").onchange = (e) => {
