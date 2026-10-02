@@ -183,6 +183,30 @@ label select {
   align-items: center;
   font-size: 12px;
 }
+.page-tab {
+  cursor: grab;
+}
+.page-tab.dragging-page {
+  opacity: 0.45;
+}
+.page-tab.drop-before {
+  box-shadow: -3px 0 0 #239ba5;
+}
+.page-tab.drop-after {
+  box-shadow: 3px 0 0 #239ba5;
+}
+.page-tools {
+  display: flex;
+  gap: 7px;
+  margin: -10px 0 8px;
+}
+.page-tools button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.page-order-help {
+  margin: 0 0 20px;
+}
 .page-tab.active {
   background: #eaf5f6;
   border-color: #93cbd0;

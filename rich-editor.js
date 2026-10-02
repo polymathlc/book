@@ -406,10 +406,33 @@ export function createRichEditor(api) {
       });
     updateToolbar();
   }
+  // Copies every style detail of the selection: font, size, colour, bold,
+  // italic, underline, alignment and line spacing for text; fill, outline and
+  // corner radius for shapes; table lines, padding, row height and header style
+  // together with the text style of the table. Copying while editing takes the
+  // style at the caret or selection.
   function copyFormat() {
     capture();
     const b = selectedBlocks()[0];
     if (!b) return;
+    const textFormat = () => {
+      const target = editing?.target || b,
+        runs =
+          !editing && b.type !== "table" && b.type !== "habit"
+            ? normaliseRuns(
+                b.type === "answer" ? b.value : b.text,
+                b.runs,
+              )
+            : [],
+        first = !editing && b.type === "table" ? b.cells?.[0]?.[0] : null;
+      return {
+        lineSpacing: target.lineSpacing || b.lineSpacing || 1.6,
+        ...currentFormat(),
+        ...(runs.length ? cleanFormat(runs[0]) : {}),
+        ...(first ? cleanFormat(first) : {}),
+        align: target.align || b.align || "left",
+      };
+    };
     if (b.type === "shape")
       formatClipboard = {
         kind: "shape",
@@ -418,15 +441,33 @@ export function createRichEditor(api) {
         strokeWidth: b.strokeWidth,
         radius: b.radius,
       };
-    else
+    else if (b.type === "table")
+      formatClipboard = {
+        kind: "table",
+        borderColor: b.borderColor,
+        borderWidth: b.borderWidth,
+        rowHeight: b.rowHeight,
+        cellPadding: b.cellPadding,
+        headerRow: b.headerRow,
+        ...textFormat(),
+      };
+    else if (b.type === "image") {
+      api.toast("Pictures have no text formatting to copy.");
+      return;
+    } else
       formatClipboard = {
         kind: "text",
-        lineSpacing: editing?.target.lineSpacing || b.lineSpacing || 1.6,
-        ...currentFormat(),
-        align: editing?.target.align || b.align || "left",
+        ...(b.type === "text" && b.style ? { style: b.style } : {}),
+        ...(b.type === "answer" ? { showLine: b.showLine } : {}),
+        ...textFormat(),
       };
+    const f = formatClipboard;
     api.toast(
-      "Formatting copied. Select text or an element, then paste format.",
+      "Formatting copied" +
+        (f.fontFamily
+          ? ` (${f.fontFamily}, ${+(f.fontSize * 0.75).toFixed(1)} pt)`
+          : "") +
+        ". Select text or an element, then paste format.",
     );
     updateToolbar();
   }
@@ -435,17 +476,37 @@ export function createRichEditor(api) {
       api.toast("Copy formatting first.");
       return;
     }
-    if (formatClipboard.kind === "shape")
+    const f = formatClipboard,
+      blocks = selectedBlocks();
+    if (f.kind === "shape")
       api.mutate(() => {
-        for (const b of selectedBlocks())
+        for (const b of blocks)
           if (b.type === "shape")
             for (const key of ["fill", "stroke", "strokeWidth", "radius"])
-              b[key] = formatClipboard[key];
+              b[key] = f[key];
       });
     else {
-      apply(formatClipboard);
-      align(formatClipboard.align);
-      spacing(formatClipboard.lineSpacing);
+      if (!editing)
+        api.mutate(() => {
+          for (const b of blocks) {
+            if (f.kind === "table" && b.type === "table")
+              for (const key of [
+                "borderColor",
+                "borderWidth",
+                "rowHeight",
+                "cellPadding",
+                "headerRow",
+              ])
+                b[key] = f[key];
+            if (f.kind === "text" && f.style && b.type === "text")
+              b.style = f.style;
+            if (f.kind === "text" && b.type === "answer" && "showLine" in f)
+              b.showLine = f.showLine;
+          }
+        });
+      apply(f);
+      align(f.align);
+      spacing(f.lineSpacing);
     }
   }
   function updateToolbar() {

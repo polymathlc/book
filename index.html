@@ -42,6 +42,34 @@
           class="page-list"
           aria-label="Worksheet pages"
         ></div>
+        <div class="page-tools" role="group" aria-label="Page order">
+          <button
+            id="page-earlier"
+            class="mini"
+            title="Move this page earlier (Alt+Shift+←). You can also drag a page number."
+          >
+            ◀ Earlier
+          </button>
+          <button
+            id="page-later"
+            class="mini"
+            title="Move this page later (Alt+Shift+→). You can also drag a page number."
+          >
+            Later ▶
+          </button>
+          <button
+            id="page-paste"
+            class="mini"
+            title="Paste copied elements onto this page in their original position (Ctrl/⌘+V)"
+            disabled
+          >
+            Paste here
+          </button>
+        </div>
+        <p class="small-help page-order-help">
+          Drag a page number to reorder pages. Copy elements with Ctrl/⌘+C,
+          then paste on any page with Ctrl/⌘+V — they land in the same spot.
+        </p>
         <details class="settings" open>
           <summary>Page details</summary>
           <div class="setting-grid">
