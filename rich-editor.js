@@ -671,6 +671,22 @@ export function createRichEditor(api) {
       runs.push({ text: "\n", ...format });
     return runs;
   }
+  function clipboardText(data, base = {}) {
+    if (!data) return null;
+    const html = data.getData("text/html");
+    if (html) {
+      const body = new DOMParser().parseFromString(html, "text/html").body;
+      const runs = mergeRuns(
+        [...body.childNodes].flatMap((n) => readDOM(n, cleanFormat(base))),
+      );
+      const text = runs.map((r) => r.text).join("");
+      if (text.trim()) return { text, runs };
+    }
+    // Some applications supply an image-only HTML preview alongside the real
+    // plain text. Keep the text (including spaces and line breaks) in that case.
+    const text = data.getData("text/plain").replace(/\r\n?/g, "\n");
+    return text ? { text, runs: [{ text, ...cleanFormat(base) }] } : null;
+  }
   document.addEventListener("input", (e) => {
     if (!editing || !editing.node.contains(e.target)) return;
     // Browser-managed IME, spellcheck and less common deletion operations.
@@ -697,26 +713,12 @@ export function createRichEditor(api) {
   document.addEventListener(
     "paste",
     (e) => {
-      if (
-        !editing ||
-        !editing.node.contains(e.target) ||
-        e.clipboardData.files.length
-      )
-        return;
+      if (!editing || !editing.node.contains(e.target)) return;
+      const content = clipboardText(e.clipboardData, currentFormat());
+      if (!content) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      const html = e.clipboardData.getData("text/html");
-      if (html) {
-        const body = new DOMParser().parseFromString(html, "text/html").body;
-        insert(
-          mergeRuns(
-            [...body.childNodes].flatMap((n) => readDOM(n, currentFormat())),
-          ),
-        );
-      } else
-        insert([
-          { text: e.clipboardData.getData("text/plain"), ...currentFormat() },
-        ]);
+      insert(content.runs);
     },
     true,
   );
@@ -803,6 +805,7 @@ export function createRichEditor(api) {
   return {
     start,
     finish,
+    clipboardText,
     apply,
     align,
     copyFormat,

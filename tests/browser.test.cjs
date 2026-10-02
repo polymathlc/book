@@ -46,6 +46,10 @@ const { chromium } = require("playwright");
     page.on("pageerror", (e) => errors.push(e.message));
     const base = `http://127.0.0.1:${server.address().port}`;
     await page.route("https://www.gstatic.com/**", (route) => route.abort());
+    if (process.env.BOOK_PASTE_ONLY) {
+      await require("./text-paste.cjs")(browser, base);
+      return;
+    }
     if (process.env.BOOK_TEMPLATES_ONLY) {
       await require("./page-templates.cjs")(browser, base, output);
       return;
@@ -337,6 +341,7 @@ const { chromium } = require("playwright");
     await require("./editor-features.cjs")(browser, base, output);
     await require("./powerpoint-textboxes.cjs")(browser, base, output);
     await require("./page-templates.cjs")(browser, base, output);
+    await require("./text-paste.cjs")(browser, base);
     console.log(
       "Browser acceptance passed: paste, native pixels, multiple habits, drag/resize/align, CER edit/undo, long-page flow, A4 PDF/SVG, mobile, autosave, project round-trip.",
     );
