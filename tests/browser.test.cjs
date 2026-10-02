@@ -50,6 +50,10 @@ const { chromium } = require("playwright");
       await require("./text-paste.cjs")(browser, base);
       return;
     }
+    if (process.env.BOOK_THUMBNAILS_ONLY) {
+      await require("./page-thumbnails.cjs")(browser, base, output);
+      return;
+    }
     if (process.env.BOOK_CLIPBOARD_ONLY) {
       await require("./page-clipboard.cjs")(browser, base, output);
       return;
@@ -347,6 +351,7 @@ const { chromium } = require("playwright");
     await require("./page-templates.cjs")(browser, base, output);
     await require("./text-paste.cjs")(browser, base);
     await require("./page-clipboard.cjs")(browser, base, output);
+    await require("./page-thumbnails.cjs")(browser, base, output);
     console.log(
       "Browser acceptance passed: paste, native pixels, multiple habits, drag/resize/align, CER edit/undo, long-page flow, A4 PDF/SVG, mobile, autosave, project round-trip.",
     );

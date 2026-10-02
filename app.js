@@ -901,6 +901,7 @@ function render({ inspector = true, sheets = true } = {}) {
     );
     updateZoom();
     applySelection();
+    if ($("pages-dialog").open) renderThumbnails();
   }
   if (inspector) renderInspector();
   richEditor?.updateToolbar();
@@ -1985,6 +1986,178 @@ function movePage(direction) {
   if (index < 0 || !other) return;
   reorderPage(activePage, other.id, direction > 0);
 }
+// ---- Page thumbnails: a visual sorter for the whole book -------------------
+// Each card is a live scaled copy of the page's first sheet, so what you see
+// is what prints. Copies are stripped of ids and made inert, so they never
+// receive clicks or answer selectors meant for the real worksheet.
+const THUMB_W = 168;
+function thumbnailOf(pageId) {
+  const source = document.querySelector(`.worksheet[data-page="${pageId}"]`),
+    frame = el("div", "thumb-frame"),
+    scale = THUMB_W / PAGE_W;
+  frame.style.width = THUMB_W + "px";
+  frame.style.height = PAGE_H * scale + "px";
+  if (!source) return frame;
+  const copy = source.cloneNode(true);
+  for (const n of [copy, ...copy.querySelectorAll("*")]) {
+    for (const attr of [
+      "data-block",
+      "data-page",
+      "data-sheet",
+      "data-copy-index",
+      "id",
+      "tabindex",
+      "contenteditable",
+    ])
+      n.removeAttribute(attr);
+    n.classList.remove("selected", "editing-content");
+  }
+  copy.querySelectorAll(".selection-handle").forEach((n) => n.remove());
+  copy.setAttribute("inert", "");
+  copy.setAttribute("aria-hidden", "true");
+  copy.style.transform = `scale(${scale})`;
+  frame.append(copy);
+  return frame;
+}
+function renderThumbnails(focusId = null) {
+  const grid = $("thumb-grid");
+  grid.replaceChildren(
+    ...project.pages.map((p, i) => {
+      const sheets = renderedSheets.filter((s) => s.pageId === p.id).length,
+        card = el("div", "thumb-card" + (p.id === activePage ? " active" : ""));
+      card.dataset.thumbPage = p.id;
+      card.draggable = true;
+      card.tabIndex = 0;
+      card.setAttribute("role", "listitem");
+      card.setAttribute(
+        "aria-label",
+        `Page ${i + 1} of ${project.pages.length}. Alt plus arrow keys move it; Enter opens it.`,
+      );
+      card.append(thumbnailOf(p.id));
+      const label = el("div", "thumb-label");
+      label.append(
+        el("strong", "", `Page ${i + 1}`),
+        el(
+          "span",
+          "",
+          `${pageBlocks(project, p.id).length} ${pageBlocks(project, p.id).length === 1 ? "element" : "elements"}` +
+            (sheets > 1 ? ` · ${sheets} sheets` : ""),
+        ),
+      );
+      const tools = el("div", "thumb-tools");
+      const tool = (text, title, action, disabled = false) => {
+        const b = button(text, action);
+        b.title = title;
+        b.setAttribute("aria-label", title);
+        b.disabled = disabled;
+        b.draggable = false;
+        return b;
+      };
+      tools.append(
+        tool("◀", "Move earlier", () => moveThumb(p.id, -1), i === 0),
+        tool(
+          "▶",
+          "Move later",
+          () => moveThumb(p.id, 1),
+          i === project.pages.length - 1,
+        ),
+        tool("⧉", "Duplicate this page", () => {
+          activePage = p.id;
+          duplicatePage();
+        }),
+        tool("🗑", "Delete this page", async () => {
+          activePage = p.id;
+          await deletePage();
+          if ($("pages-dialog").open) renderThumbnails();
+        }),
+      );
+      card.append(label, tools);
+      card.onclick = () => {
+        activePage = p.id;
+        selected = [];
+        render({ sheets: false });
+        for (const c of grid.children)
+          c.classList.toggle("active", c.dataset.thumbPage === activePage);
+      };
+      card.ondblclick = () => openThumbPage(p.id);
+      card.onkeydown = (e) => {
+        if (e.target !== card) return;
+        if (e.altKey && ["ArrowLeft", "ArrowRight"].includes(e.key)) {
+          e.preventDefault();
+          moveThumb(p.id, e.key === "ArrowLeft" ? -1 : 1);
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          openThumbPage(p.id);
+        } else if (["ArrowLeft", "ArrowRight"].includes(e.key)) {
+          e.preventDefault();
+          grid.children[i + (e.key === "ArrowLeft" ? -1 : 1)]?.focus();
+        }
+      };
+      card.ondragstart = (e) => {
+        e.dataTransfer.setData("application/x-book-page", p.id);
+        e.dataTransfer.effectAllowed = "move";
+        card.classList.add("dragging-page");
+      };
+      card.ondragend = () => clearThumbDrop(true);
+      card.ondragover = (e) => {
+        if (!e.dataTransfer.types.includes("application/x-book-page")) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        const after = dropAfter(e, card);
+        clearThumbDrop(false);
+        card.classList.add(after ? "drop-after" : "drop-before");
+      };
+      card.ondragleave = (e) => {
+        if (!card.contains(e.relatedTarget))
+          card.classList.remove("drop-before", "drop-after");
+      };
+      card.ondrop = (e) => {
+        const source = e.dataTransfer.getData("application/x-book-page");
+        if (!source) return;
+        e.preventDefault();
+        const after = dropAfter(e, card);
+        clearThumbDrop(true);
+        reorderPage(source, p.id, after);
+        grid.querySelector(`[data-thumb-page="${source}"]`)?.focus();
+      };
+      return card;
+    }),
+  );
+  $("thumb-summary").textContent =
+    `${project.pages.length} ${project.pages.length === 1 ? "page" : "pages"} · drag a page to a new position`;
+  if (focusId) grid.querySelector(`[data-thumb-page="${focusId}"]`)?.focus();
+}
+function clearThumbDrop(dragging) {
+  for (const n of $("thumb-grid").children)
+    n.classList.remove(
+      "drop-before",
+      "drop-after",
+      ...(dragging ? ["dragging-page"] : []),
+    );
+}
+function moveThumb(id, direction) {
+  const index = project.pages.findIndex((p) => p.id === id),
+    other = project.pages[index + direction];
+  if (!other) return;
+  reorderPage(id, other.id, direction > 0);
+  $("thumb-grid").querySelector(`[data-thumb-page="${id}"]`)?.focus();
+}
+function openThumbPage(id) {
+  activePage = id;
+  selected = [];
+  $("pages-dialog").close();
+  render();
+  document
+    .querySelector(`.worksheet[data-page="${id}"]`)
+    ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+$("arrange-pages").onclick = () => {
+  richEditor.finish();
+  $("pages-dialog").showModal();
+  renderThumbnails(activePage);
+};
+$("pages-close").onclick = () => $("pages-dialog").close();
+$("pages-dialog").onclose = () => $("thumb-grid").replaceChildren();
 $("page-earlier").onclick = () => movePage(-1);
 $("page-later").onclick = () => movePage(1);
 function addPage() {
