@@ -22,6 +22,8 @@ import {
   dotDiagram,
   escapeXml,
   buildPdf,
+  drawingPathData,
+  blockFromStroke,
 } from "./core.js";
 import {
   normaliseRuns,
@@ -434,6 +436,8 @@ function shapeSvg(b) {
   const graphic =
     kind === "line"
       ? `<line x1="${inset}" y1="${h / 2}" x2="${w - inset}" y2="${h / 2}" stroke="${b.stroke}" stroke-width="${sw}"/>`
+      : kind === "path"
+        ? `<path d="${drawingPathData(b)}" fill="${b.closed ? b.fill : "none"}" stroke="${b.stroke}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"/>`
       : ["circle", "ellipse"].includes(kind)
         ? `<ellipse cx="${w / 2}" cy="${h / 2}" rx="${Math.max(0, w / 2 - inset)}" ry="${Math.max(0, h / 2 - inset)}" ${attrs}/>`
         : `<rect x="${inset}" y="${inset}" width="${Math.max(0, w - sw)}" height="${Math.max(0, h - sw)}" rx="${kind === "rounded" ? Math.min(b.radius, w / 2, h / 2) : 0}" ${attrs}/>`;
@@ -1181,6 +1185,9 @@ function renderInspector() {
         ["circle", "Circle"],
         ["ellipse", "Ellipse"],
         ["line", "Line"],
+        // Only a block that IS a drawing offers it: the points live on the
+        // block, so switching a rectangle to "Drawing" would have nothing to draw.
+        ...(b.kind === "path" ? [["path", "Drawing"]] : []),
       ]),
       field(
         "Fill colour",
@@ -3454,7 +3461,211 @@ const cloudSync = createCloudSync({
     finishChange();
   },
 });
+/* ================= Draw tool: freehand ink that snaps when you hold =================
+   Draw on the page with a pen, finger or mouse. Rest the pointer for about half a
+   second and the stroke becomes the shape it was meant to be (line, circle, ellipse,
+   rectangle, triangle, polygon, arc, smooth curve); keep dragging to adjust it,
+   lift to keep it. Circles, ellipses, rectangles and level lines become the editor's
+   own shape blocks, so they keep their handles and inspector; everything else is a
+   "path" shape. ShapeSnap is optional: without it the tool is plain smoothed ink. */
+function setupDrawTool() {
+  const button = $("add-draw"),
+    bar = $("draw-bar"),
+    colour = $("draw-colour"),
+    width = $("draw-width"),
+    done = $("draw-done");
+  if (!button || !bar) return;
+  const SVGNS = "http://www.w3.org/2000/svg";
+  let on = false,
+    stroke = null,
+    hintShown = false;
+  const lib = () => window.ShapeSnap || null;
+  const style = () => ({
+    stroke: /^#[0-9a-f]{6}$/i.test(colour.value) ? colour.value : "#1f2933",
+    strokeWidth: clamp(Number(width.value) || 3, 0.5, 24),
+  });
+  function setOn(next) {
+    next = !!next && !window.BookTouchup?.isOpen();
+    if (next === on) return;
+    on = next;
+    if (on) richEditor?.finish();
+    else cancelStroke();
+    document.body.classList.toggle("drawing-mode", on);
+    button.setAttribute("aria-pressed", String(on));
+    button.classList.toggle("active", on);
+    bar.hidden = !on;
+    if (on) {
+      select(null);
+      toast(
+        lib()
+          ? "Draw on the page. Hold still for half a second to snap to a clean shape."
+          : "Draw on the page. Press Esc or Done to stop.",
+      );
+    }
+  }
+  function cancelStroke() {
+    if (!stroke) return;
+    stroke.hold?.cancel();
+    if (stroke.raf) cancelAnimationFrame(stroke.raf);
+    stroke.svg.remove();
+    stroke = null;
+  }
+  // One screen pixel in content pixels, so recognition tolerances follow zoom.
+  const scaleOf = (content) => content.getBoundingClientRect().width / content.offsetWidth || 1;
+  function pointAt(e) {
+    const r = stroke.content.getBoundingClientRect(),
+      k = stroke.k;
+    return {
+      x: clamp((e.clientX - r.left) / k, 0, stroke.content.offsetWidth),
+      y: clamp((e.clientY - r.top) / k, 0, stroke.content.offsetHeight),
+    };
+  }
+  function paint() {
+    stroke.raf = 0;
+    const st = style(),
+      pts = stroke.desc && lib() ? lib().toPoints(stroke.desc) : stroke.pts;
+    stroke.path.setAttribute("stroke", st.stroke);
+    stroke.path.setAttribute("stroke-width", st.strokeWidth);
+    stroke.path.setAttribute(
+      "d",
+      pts.length
+        ? "M" + pts.map((p) => `${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(" L")
+        : "",
+    );
+    stroke.path.setAttribute("fill", "none");
+  }
+  const schedule = () => {
+    if (stroke && !stroke.raf) stroke.raf = requestAnimationFrame(paint);
+  };
+  function fire() {
+    const S = lib();
+    if (!stroke || !S || stroke.desc || stroke.pts.length < 4) return;
+    const rec = S.recognize(stroke.pts, { unit: 1 / stroke.k });
+    if (!rec) return;
+    stroke.desc = rec;
+    schedule();
+    if (!hintShown) {
+      hintShown = true;
+      toast(
+        `Snapped to a ${String(S.label(rec)).toLowerCase()}. Keep dragging to adjust it, or lift to keep it.`,
+      );
+    }
+  }
+  function finish() {
+    if (!stroke) return;
+    const s = stroke;
+    stroke = null;
+    s.hold?.cancel();
+    if (s.raf) cancelAnimationFrame(s.raf);
+    s.svg.remove();
+    const travel = s.pts.reduce(
+      (m, p) => Math.max(m, Math.hypot(p.x - s.pts[0].x, p.y - s.pts[0].y)),
+      0,
+    );
+    // A tap is not a drawing; a held tap that never moved is not a shape either.
+    if (!s.desc && (s.pts.length < 2 || travel < 3 / s.k)) return;
+    const fields = blockFromStroke(
+      s.desc,
+      s.pts,
+      style(),
+      lib()?.toPoints,
+      { w: s.content.offsetWidth, h: s.content.offsetHeight },
+    );
+    if (!fields) return;
+    const pageId = s.content.closest(".worksheet").dataset.page,
+      sheetIndex = Number(s.content.closest(".worksheet").dataset.copyIndex || 0);
+    if (sheetIndex > 0) fields.sheetIndex = sheetIndex;
+    const b = makeBlock("shape", fields);
+    // One undo step, and nothing left selected: the next stroke starts at once.
+    mutate(() => {
+      activePage = pageId;
+      project.pages.find((p) => p.id === pageId).blocks.push(b);
+      selected = [];
+    });
+  }
+  button.onclick = () => setOn(!on);
+  done.onclick = () => setOn(false);
+  for (const input of [colour, width])
+    input.addEventListener("input", () => {
+      if (stroke) schedule();
+    });
+  $("sheets").addEventListener(
+    "pointerdown",
+    (e) => {
+      if (!on || e.button > 0 || stroke) return;
+      const content = e.target.closest?.(".worksheet-content");
+      if (!content || content.classList.contains("measure-box")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const svg = document.createElementNS(SVGNS, "svg"),
+        path = document.createElementNS(SVGNS, "path");
+      svg.setAttribute("class", "draw-preview");
+      svg.setAttribute("viewBox", `0 0 ${content.offsetWidth} ${content.offsetHeight}`);
+      svg.setAttribute("aria-hidden", "true");
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("stroke-linejoin", "round");
+      svg.append(path);
+      content.append(svg);
+      try {
+        content.setPointerCapture?.(e.pointerId);
+      } catch {}
+      stroke = { content, svg, path, k: scaleOf(content), pts: [], pointerId: e.pointerId };
+      stroke.pts.push(pointAt(e));
+      const S = lib();
+      if (S) {
+        stroke.hold = S.createHold({ onHold: fire });
+        stroke.hold.start(e.clientX, e.clientY);
+      }
+      schedule();
+    },
+    true,
+  );
+  window.addEventListener(
+    "pointermove",
+    (e) => {
+      if (!stroke || e.pointerId !== stroke.pointerId) return;
+      e.preventDefault();
+      const events = e.getCoalescedEvents?.() || [e];
+      stroke.hold?.move(e.clientX, e.clientY);
+      for (const ev of events.length ? events : [e]) {
+        const p = pointAt(ev);
+        if (stroke.desc && lib()) stroke.desc = lib().drag(stroke.desc, p);
+        else {
+          const last = stroke.pts[stroke.pts.length - 1];
+          if (!last || Math.hypot(p.x - last.x, p.y - last.y) * stroke.k >= 0.5)
+            stroke.pts.push(p);
+        }
+      }
+      schedule();
+    },
+    { passive: false },
+  );
+  const lift = (e) => {
+    if (stroke && e.pointerId === stroke.pointerId) finish();
+  };
+  window.addEventListener("pointerup", lift);
+  window.addEventListener("pointercancel", (e) => {
+    if (stroke && e.pointerId === stroke.pointerId) cancelStroke();
+  });
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (!on || e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (stroke) cancelStroke();
+      else setOn(false);
+    },
+    true,
+  );
+  // Opening the touch-up editor, or any dialog, ends drawing so ink never lands under it.
+  document.addEventListener("click", (e) => {
+    if (on && e.target.closest?.("dialog, #cloud-books, #print")) setOn(false);
+  });
+  window.BookDraw = { isOn: () => on, setOn, isDrawing: () => !!stroke };
+}
 setupInsertTools();
+setupDrawTool();
 setupShortcuts();
 await loadDraft();
 await document.fonts.ready;

@@ -7,6 +7,7 @@
     <title>Polymath Book Studio</title>
     <link rel="icon" href="assets/logo.png" />
     <link rel="stylesheet" href="styles.css" />
+    <script defer src="shape-snap.js"></script>
     <script defer src="cer-touchup.js"></script>
     <script type="module" src="app.js"></script>
   </head>
@@ -127,8 +128,34 @@
             ><button id="add-answer-parts">+ Answers a, b, c</button
             ><button id="add-table">+ Table</button
             ><button id="add-shape">+ Shape</button
+            ><button
+              id="add-draw"
+              aria-pressed="false"
+              title="Draw freehand on the page. Hold still for half a second and your stroke snaps to a clean line, circle, rectangle or curve."
+            >
+              ✏ Draw</button
             ><button id="add-divider">+ Divider</button
             ><button id="add-hexagon">+ Dot diagram</button>
+          </div>
+          <div class="draw-bar" id="draw-bar" hidden>
+            <label
+              >Colour
+              <input id="draw-colour" type="color" value="#1f2933"
+            /></label>
+            <label
+              >Thickness
+              <select id="draw-width">
+                <option value="1.5">Fine</option>
+                <option value="3" selected>Medium</option>
+                <option value="5">Bold</option>
+                <option value="8">Marker</option>
+              </select></label
+            >
+            <button id="draw-done" class="mini">Done</button>
+            <p class="small-help">
+              Hold still for half a second to snap to a clean shape. Keep
+              dragging to adjust it. Esc stops drawing.
+            </p>
           </div>
           <div class="shape-palette" id="shape-palette" hidden>
             <button data-shape="rectangle">Rectangle</button
@@ -572,7 +599,7 @@
               type="button"
               class="annot-tool"
               data-atool="paint"
-              title="Paint over with the chosen colour — Photoshop style: click a point then Shift-click another to join them with a straight line; Shift-drag locks to horizontal / vertical"
+              title="Paint over with the chosen colour — Photoshop style: click a point then Shift-click another to join them with a straight line; Shift-drag locks to horizontal / vertical. Draw freehand and HOLD STILL before lifting: the stroke snaps to the neat shape it looks like — straight line, arc, smooth curve, circle, ellipse, rectangle, square, triangle, pentagon or hexagon — and you can keep dragging to adjust it. Undo takes the whole stroke back."
             >
               Paint
             </button>
@@ -638,9 +665,17 @@
               type="button"
               class="annot-tool"
               data-atool="lasso"
-              title="Lasso select (L): draw freehand around an area, then fill it, move it, or use AI content-aware fill"
+              title="Lasso select (L): draw freehand around an area, then fill it, move it, or use AI content-aware fill. Hold still before lifting and the outline snaps to the neat shape it looks like (circle, ellipse, rectangle, triangle…) — keep dragging to adjust."
             >
               ➰ Lasso
+            </button>
+            <button
+              type="button"
+              class="annot-tool"
+              data-atool="penselect"
+              title="Pen select (P) — Photoshop's pen, for a precise selection. Click to place corner points; click and DRAG to pull out a smooth curve; click the first point (or press Enter, or double-click) to close it into a selection. Drag a point or its handle to adjust it; Backspace removes the last point; Esc cancels. Alt-drag a handle bends one side only; Shift locks to 45°."
+            >
+              🖊️ Pen select
             </button>
             <button
               type="button"
