@@ -440,7 +440,16 @@ label select {
   font-weight: 700;
   letter-spacing: 0.45px;
   color: #6b8188;
+  flex-shrink: 0;
+}
+.footer-ip-notice {
   flex: 1;
+  min-width: 0;
+  font-size: 7px;
+  line-height: 1.35;
+  font-weight: 400;
+  color: #888;
+  text-align: center;
 }
 .footer-page {
   border: 1px solid #239ba5;
