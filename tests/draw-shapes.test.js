@@ -17,8 +17,10 @@ import {
   simplifyPoints,
   validateProject,
   blankProject,
+  dotDiagram,
 } from "../core.js";
 import { rng, make } from "./shape-snap-fixtures.mjs";
+import { drawingFixtures, drawingGeometry } from "./draw-roundtrip-fixtures.mjs";
 
 const ShapeSnap = globalThis.ShapeSnap;
 const style = { stroke: "#1f2933", strokeWidth: 3 };
@@ -143,4 +145,121 @@ test("a path block survives validateProject; a bad one becomes a plain rectangle
   assert.equal(g.closed, true);
   assert.equal(g.points.length, good.points.length);
   assert.equal(b.kind, "rectangle");
+});
+
+test("round-trip fixtures exercise narrow paths, curves and genuinely snapped small native shapes", () => {
+  const blocks = Object.fromEntries(drawingFixtures().map(({ name, block }) => [name, block]));
+  assert.ok(blocks.vertical.w < 40);
+  assert.ok(blocks.horizontal.height < 20);
+  assert.ok(blocks["shallow curve"].height < 20);
+  assert.ok(blocks["tiny curve"].w < 40 && blocks["tiny curve"].height < 20);
+  assert.match(drawingPathData(blocks["shallow curve"]), / C/);
+  assert.match(drawingPathData(blocks["tiny curve"]), / C/);
+  for (const kind of ["circle", "ellipse", "rectangle", "line"]) {
+    const block = blocks[`small ${kind}`];
+    assert.equal(block.kind, kind);
+    assert.ok(block.w < 40, `${kind} width ${block.w}`);
+    if (kind !== "line") assert.ok(block.height < 20, `${kind} height ${block.height}`);
+  }
+  const triangle = blocks["small tilted triangle"];
+  assert.equal(triangle.kind, "path");
+  assert.equal(triangle.closed, true);
+  assert.equal(triangle.smooth, false);
+  assert.ok(triangle.w < 40);
+  assert.match(drawingPathData(triangle), / L.* Z$/);
+  assert.doesNotMatch(drawingPathData(triangle), /C/);
+});
+
+for (const { name, block } of drawingFixtures()) {
+  test(`${name} keeps its absolute geometry through repeated project JSON reloads`, () => {
+    let project = blankProject();
+    project.pages[0].blocks = [block];
+    const expected = drawingGeometry(block);
+    // Device drafts and exported project files both serialize project JSON and
+    // call validateProject on reopening. Repetition also catches gradual drift.
+    for (let round = 1; round <= 3; round++) {
+      project = validateProject(JSON.parse(JSON.stringify(project)));
+      assert.deepEqual(drawingGeometry(project.pages[0].blocks[0]), expected, `reload ${round}`);
+    }
+  });
+}
+
+const validateBlocks = (blocks) => {
+  const project = blankProject();
+  project.pages[0].blocks = blocks;
+  return validateProject(project).pages[0].blocks;
+};
+
+test("invalid paths and unknown shapes retain ordinary rectangle sizing and coordinate protection", () => {
+  const fields = { x: -1000, y: -1000, w: 2, height: 2 };
+  const blocks = validateBlocks([
+    makeBlock("shape", { ...fields, kind: "path", points: [[0.1, 0.1], [NaN, 1], "junk"] }),
+    makeBlock("shape", { ...fields, kind: "unknown" }),
+  ]);
+  assert.equal(blocks[0].kind, "rectangle");
+  assert.equal(blocks[1].kind, "rounded");
+  for (const block of blocks) {
+    assert.deepEqual([block.x, block.y, block.w, block.height], [0, 0, 40, 20]);
+  }
+});
+
+test("missing, nonfinite and nonpositive drawing dimensions retain safe defaults and minimums", () => {
+  for (const invalid of [undefined, NaN, Infinity, -Infinity, "invalid", 0, -10, null]) {
+    const [block] = validateBlocks([makeBlock("shape", {
+      kind: "path", points: [[0, 0], [1, 1]], w: invalid, height: invalid,
+      x: "invalid", y: NaN,
+    })]);
+    const finite = Number.isFinite(Number(invalid));
+    assert.equal(block.w, finite ? 40 : 300, `width from ${String(invalid)}`);
+    assert.equal(block.height, finite ? 20 : 180, `height from ${String(invalid)}`);
+    assert.deepEqual([block.x, block.y], [0, 0]);
+  }
+});
+
+test("oversized shape imports remain bounded and keep colour, stroke, point and rotation sanitization", () => {
+  for (const kind of ["path", "rectangle", "rounded", "circle", "ellipse", "line"]) {
+    const [block] = validateBlocks([makeBlock("shape", {
+      kind, x: -1e9, y: 1e9, w: 1e9, height: 1e9,
+      points: [[-2, 3], "junk", [NaN, 0], ...Array.from({ length: 1500 }, () => [0.5, 0.5])],
+      strokeWidth: 1e9, rotation: 1e9, radius: 1e9,
+      fill: "url(javascript:alert(1))", stroke: "invalid",
+    })]);
+    assert.ok(block.x >= -36 && block.x <= Math.ceil(CONTENT_W));
+    assert.ok(block.y >= -36 && block.y <= Math.ceil(CONTENT_H));
+    assert.ok(block.w > 0 && block.w <= Math.ceil(CONTENT_W) + 72);
+    assert.ok(block.height > 0 && block.height <= Math.ceil(CONTENT_H) + 72);
+    assert.equal(block.strokeWidth, 24);
+    assert.equal(block.rotation, 180);
+    assert.equal(block.radius, 200);
+    assert.equal(block.fill, "#edf6f6");
+    assert.equal(block.stroke, "#239ba5");
+    if (kind === "path") {
+      assert.equal(block.points.length, 1200);
+      assert.deepEqual(block.points[0], [0, 1]);
+      assert.ok(block.points.every(([x, y]) => x >= 0 && x <= 1 && y >= 0 && y <= 1));
+    }
+  }
+});
+
+test("other elements keep their existing size minimums and page bounds", () => {
+  for (const type of ["text", "habit", "image", "working", "answer", "divider", "table"]) {
+    const fields = type === "image" ? { src: dotDiagram().src } : {};
+    const [small, oversized] = validateBlocks([
+      makeBlock(type, { ...fields, x: -100, y: -100, w: 2, height: 2 }),
+      makeBlock(type, { ...fields, x: 1e9, y: 1e9, w: 1e9, height: 1e9 }),
+    ]);
+    assert.deepEqual([small.x, small.y, small.w, small.height], [0, 0, 40, 20], type);
+    assert.deepEqual([oversized.x, oversized.y, oversized.w, oversized.height],
+      [CONTENT_W, CONTENT_H, CONTENT_W, CONTENT_H], type);
+  }
+});
+
+test("ordinary native shapes retain dimensions, while circles still normalize to a square", () => {
+  for (const kind of ["rectangle", "rounded", "ellipse", "line"]) {
+    const original = makeBlock("shape", { kind, x: 40, y: 80, w: 240, height: 100 });
+    const [restored] = validateBlocks([original]);
+    assert.deepEqual(drawingGeometry(restored), drawingGeometry(original));
+  }
+  const [circle] = validateBlocks([makeBlock("shape", { kind: "circle", w: 80, height: 160 })]);
+  assert.deepEqual([circle.w, circle.height], [80, 80]);
 });

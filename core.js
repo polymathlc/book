@@ -366,8 +366,26 @@ export function validateProject(input) {
           v.stroke = validColour(b.stroke, "#239ba5");
           v.strokeWidth = num(b.strokeWidth, 0, 24, 2);
           v.radius = num(b.radius, 0, 200, 16);
+          if (v.kind === b.kind) {
+            // Draw creates native shapes and paths below the general 40x20
+            // element minimum. Their box is part of the geometry: enlarging it
+            // stretches normalized points and moves the visible stroke.
+            // Allow padding for the maximum supported 24px stroke at page
+            // edges. Changing stroke width later does not change the box.
+            // offsetWidth/offsetHeight round the browser's content dimensions.
+            const padY = v.kind === "path" ? 36 : 12,
+              padX = v.kind === "line" ? 0 : padY;
+            v.x = num(b.x, -padX, Math.ceil(CONTENT_W), 0);
+            v.y = num(b.y, -padY, Math.ceil(CONTENT_H), 0);
+            // Missing/nonpositive dimensions and unusable paths retain the
+            // ordinary element defaults; positive sizes stay finite and bounded.
+            if (Number(b.w) > 0)
+              v.w = num(b.w, 1, Math.ceil(CONTENT_W) + padX * 2, 300);
+            if (Number(b.height) > 0)
+              v.height = num(b.height, 1, Math.ceil(CONTENT_H) + padY * 2, 180);
+          }
           if (v.kind === "circle")
-            v.height = v.w = Math.min(v.w, CONTENT_H, CONTENT_W);
+            v.height = v.w;
         }
         if (b.type === "table") {
           v.rows = Math.round(num(b.rows, 1, 50, 3));

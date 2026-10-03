@@ -1,6 +1,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const installFirebaseMock = require("./firebase-mock.cjs");
 
 // The page-level Draw tool in a REAL browser: real mouse events, a real hold,
 // the real stored blocks. The unit tests prove what a stroke becomes; only this
@@ -12,7 +13,7 @@ module.exports = async function drawTool(browser, base, output) {
   const page = await browser.newPage({ viewport: { width: 1500, height: 1300 } }),
     errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.route("https://www.gstatic.com/**", (route) => route.abort());
+  await installFirebaseMock(page, base);
   const project = () => page.evaluate(() => window.BookStudio.getProject());
   const blocks = async (index = 0) => (await project()).pages[index].blocks;
   const place = (pts, dx, dy) => {
@@ -55,6 +56,23 @@ module.exports = async function drawTool(browser, base, output) {
     const list = await blocks(sheet);
     return list[list.length - 1];
   };
+  // Compare the stored box, absolute path coordinates, and the actual SVG.
+  // Keeping only normalised points would miss a box changing around those points.
+  const geometry = (ids) => page.evaluate((ids) => ids.map((id) => {
+    const b = window.BookStudio.getProject().pages.flatMap((p) => p.blocks).find((b) => b.id === id);
+    const node = document.querySelector(`.worksheet [data-block="${id}"]`);
+    const svg = node.querySelector("svg.shape-art");
+    const r = node.getBoundingClientRect(), c = node.parentElement.getBoundingClientRect();
+    const scale = c.width / node.parentElement.offsetWidth;
+    return {
+      x: b.x, y: b.y, w: b.w, height: b.height, kind: b.kind,
+      stroke: b.stroke, strokeWidth: b.strokeWidth, fill: b.fill,
+      closed: b.closed, smooth: b.smooth, points: b.points,
+      absolutePoints: b.points?.map(([x, y]) => [b.x + x * b.w, b.y + y * b.height]),
+      rendered: [r.x - c.x, r.y - c.y, r.width, r.height].map((n) => Math.round(n / scale * 1000) / 1000),
+      viewBox: svg.getAttribute("viewBox"), graphic: svg.innerHTML,
+    };
+  }), ids);
   try {
     await page.goto(base);
     await page.waitForFunction(() => window.BookStudio && window.ShapeSnap);
@@ -169,6 +187,173 @@ module.exports = async function drawTool(browser, base, output) {
     const exported = fs.readFileSync(svgPath, "utf8");
     assert.match(exported, /<path d="M[^"]*Z"/, "the closed triangle is in the export");
     assert.ok(!/draw-preview/.test(exported), "the live preview never reaches an export");
+
+    // ---- real narrow strokes and small held native shapes survive every reopen
+    await page.click("#add-draw");
+    await page.fill("#draw-colour", "#21536a");
+    await page.selectOption("#draw-width", "3");
+    const narrow = [];
+    const stroke = async (pts, options) => {
+      await draw(pts, options);
+      const value = await last();
+      narrow.push(value.id);
+      return value;
+    };
+    b = await stroke([{ x: 35, y: 100 }, { x: 35, y: 140 }, { x: 35, y: 185 }]);
+    assert.equal(b.kind, "path");
+    assert.ok(b.w < 40, `vertical stroke is genuinely narrow: ${b.w}`);
+    b = await stroke([{ x: 35, y: 290 }, { x: 100, y: 290 }, { x: 175, y: 290 }]);
+    assert.equal(b.kind, "path");
+    assert.ok(b.height < 20, `horizontal stroke is genuinely shallow: ${b.height}`);
+    b = await stroke(Array.from({ length: 17 }, (_, i) => ({ x: 35 + i * 11, y: 325 + 6 * Math.sin(i * Math.PI / 16) })));
+    assert.equal(b.kind, "path");
+    assert.ok(b.height < 20);
+    assert.match(await page.locator(`.worksheet [data-block="${b.id}"] path`).getAttribute("d"), /C/, "shallow curve keeps Bezier geometry");
+    const oval = (cx, cy, rx, ry) => Array.from({ length: 25 }, (_, i) => ({
+      x: cx + rx * Math.cos(i * Math.PI / 12), y: cy + ry * Math.sin(i * Math.PI / 12),
+    }));
+    b = await stroke(oval(90, 35, 7, 7), { hold: 800 });
+    assert.equal(b.kind, "circle");
+    assert.ok(b.w < 40 && b.height < 20);
+    b = await stroke(oval(150, 35, 13, 5), { hold: 800 });
+    assert.equal(b.kind, "ellipse");
+    assert.ok(b.w < 40 && b.height < 20);
+    b = await stroke([
+      { x: 200, y: 30 }, { x: 213, y: 30 }, { x: 226, y: 30 },
+      { x: 226, y: 35 }, { x: 226, y: 40 }, { x: 213, y: 40 },
+      { x: 200, y: 40 }, { x: 200, y: 35 }, { x: 200, y: 30 },
+    ], { hold: 800 });
+    assert.equal(b.kind, "rectangle");
+    assert.ok(b.w < 40 && b.height < 20);
+    b = await stroke(Array.from({ length: 7 }, (_, i) => ({ x: 280 + i * 4, y: 35 })), { hold: 800 });
+    assert.equal(b.kind, "line");
+    assert.ok(b.w < 40);
+    await page.keyboard.press("Escape");
+    const drawn = await geometry(narrow);
+
+    // Wait for the real IndexedDB transaction, then reload the actual page.
+    await page.waitForFunction(() => document.getElementById("save-status").textContent === "Draft saved on this device");
+    const stored = await page.evaluate(() => new Promise((resolve, reject) => {
+      const open = indexedDB.open("polymath-book-studio", 1);
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result, read = db.transaction("drafts").objectStore("drafts").get("current");
+        read.onsuccess = () => { db.close(); resolve(read.result); };
+        read.onerror = () => { db.close(); reject(read.error); };
+      };
+    }));
+    assert.deepEqual(stored.pages[0].blocks.filter((b) => narrow.includes(b.id)), (await blocks()).filter((b) => narrow.includes(b.id)), "drawings really reached the device draft");
+    await page.reload();
+    await page.waitForFunction(() => window.BookStudio && window.ShapeSnap);
+    await page.selectOption("#zoom", "1");
+    await content();
+    assert.deepEqual(await geometry(narrow), drawn, "device draft reload preserves boxes, absolute paths and SVG geometry");
+
+    const projectDownload = page.waitForEvent("download");
+    await page.click("#export-project");
+    const savedProject = path.join(output, "draw-round-trip.book.json");
+    await (await projectDownload).saveAs(savedProject);
+    assert.deepEqual(JSON.parse(fs.readFileSync(savedProject, "utf8")).pages[0].blocks.filter((b) => narrow.includes(b.id)), (await blocks()).filter((b) => narrow.includes(b.id)));
+    await page.setInputFiles("#project-input", savedProject);
+    await page.waitForSelector("#confirm-dialog[open]");
+    await page.click("#confirm-ok");
+    await content();
+    assert.deepEqual(await geometry(narrow), drawn, "project export/import preserves the actual drawing geometry");
+
+    // Exercise Firebase upload, listing and Open through the browser's existing
+    // service double. The app and repository perform their real serialization.
+    await page.click("#cloud-books");
+    await page.waitForSelector("#cloud-login:not([hidden])");
+    await page.click("#cloud-google");
+    await page.waitForFunction(() => document.getElementById("cloud-status").textContent === "Cloud: saved");
+    await page.locator("#cloud-list").getByRole("button", { name: "Open", exact: true }).click();
+    await page.waitForSelector("#confirm-dialog[open]");
+    await page.click("#confirm-ok");
+    await page.waitForFunction(() => !document.getElementById("cloud-dialog").open);
+    await content();
+    assert.deepEqual(await geometry(narrow), drawn, "cloud reopen preserves the actual drawing geometry");
+
+    // Loaded drawings still use the normal editor. Nudge and style changes are
+    // independently undoable; dragging a resize handle changes the path's box.
+    for (const i of [0, 1, 3, 4, 5, 6]) {
+      await page.locator(`[data-list-block="${narrow[i]}"]`).click();
+      await page.keyboard.press("ArrowDown");
+      const moved = (await geometry([narrow[i]]))[0];
+      assert.equal(moved.y, drawn[i].y + 1, `${drawn[i].kind} remains movable after reopening`);
+      for (const field of ["x", "w", "height", "graphic", "points"])
+        assert.deepEqual(moved[field], drawn[i][field], `moving ${drawn[i].kind} retains ${field}`);
+      await page.click("#undo");
+      assert.deepEqual(await geometry([narrow[i]]), [drawn[i]], `undo restores ${drawn[i].kind} exactly`);
+    }
+    await page.locator(`[data-list-block="${narrow[2]}"]`).click();
+    await page.keyboard.press("ArrowRight");
+    const nudged = (await geometry([narrow[2]]))[0];
+    assert.equal(nudged.x, drawn[2].x + 1);
+    assert.equal(nudged.y, drawn[2].y);
+    assert.deepEqual(nudged.points, drawn[2].points);
+    assert.deepEqual(nudged.absolutePoints, drawn[2].absolutePoints.map(([x, y]) => [x + 1, y]));
+    await page.click("#undo");
+    assert.deepEqual(await geometry(narrow), drawn, "undo restores the narrow drawing exactly");
+    await page.click("#redo");
+    assert.deepEqual((await geometry([narrow[2]]))[0], nudged);
+    await page.click("#undo");
+    await page.locator(`[data-list-block="${narrow[2]}"]`).click();
+    await page.locator('[data-field="stroke"]').fill("#aa3300");
+    assert.equal((await geometry([narrow[2]]))[0].stroke, "#aa3300");
+    await page.click("#undo");
+    assert.deepEqual(await geometry(narrow), drawn);
+    await page.locator(`[data-list-block="${narrow[2]}"]`).click();
+    const handle = page.locator(`.worksheet [data-block="${narrow[2]}"] .selection-handle.se`);
+    await handle.scrollIntoViewIfNeeded();
+    const handleBox = await handle.boundingBox();
+    await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handleBox.x + handleBox.width / 2 + 35, handleBox.y + handleBox.height / 2 + 25, { steps: 5 });
+    await page.mouse.up();
+    const resized = (await geometry([narrow[2]]))[0];
+    assert.ok(resized.w > drawn[2].w && resized.height > drawn[2].height);
+    assert.deepEqual(resized.points, drawn[2].points, "resizing retains the editable normalized path");
+    assert.notEqual(resized.graphic, drawn[2].graphic, "resize changes rendered geometry");
+    await page.click("#undo");
+    assert.deepEqual(await geometry(narrow), drawn);
+
+    // Copy via the app's copy handler, then paste in a fresh tab so the payload
+    // goes through clipboardElements' validation instead of its in-tab shortcut.
+    for (const [i, id] of narrow.entries())
+      await page.locator(`[data-list-block="${id}"]`).click({ modifiers: i ? ["Shift"] : [] });
+    const payload = await page.evaluate(() => {
+      const data = new DataTransfer();
+      document.body.dispatchEvent(new ClipboardEvent("copy", { clipboardData: data, bubbles: true, cancelable: true }));
+      return Object.fromEntries(Array.from(data.types, (type) => [type, data.getData(type)]));
+    });
+    assert.ok(payload["application/x-book-studio-elements"]);
+    const copied = await browser.newPage({ viewport: { width: 1500, height: 1300 } });
+    try {
+      await copied.route("https://www.gstatic.com/**", (route) => route.abort());
+      copied.on("pageerror", (e) => errors.push(e.message));
+      await copied.goto(base);
+      await copied.waitForFunction(() => window.BookStudio);
+      await copied.evaluate((payload) => {
+        const data = new DataTransfer();
+        for (const [type, value] of Object.entries(payload)) data.setData(type, value);
+        document.body.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+      }, payload);
+      const pasted = await copied.evaluate(() => window.BookStudio.getProject().pages[0].blocks);
+      const originals = (await blocks()).filter((b) => narrow.includes(b.id));
+      const withoutId = ({ id, ...b }) => b;
+      assert.deepEqual(pasted.map(withoutId), originals.map(withoutId), "validated cross-tab paste preserves drawing positions and geometry");
+      await copied.click("#undo");
+      assert.equal(await copied.evaluate(() => window.BookStudio.getProject().pages[0].blocks.length), 0);
+      await copied.click("#redo");
+      assert.deepEqual(await copied.evaluate(() => window.BookStudio.getProject().pages[0].blocks), pasted);
+    } finally {
+      await copied.close();
+    }
+    await page.click("#cloud-books");
+    await page.click("#cloud-signout");
+    await page.waitForFunction(() => !window.__fm.auth.currentUser);
+    await page.click("#cloud-close");
+    console.log("Draw browser round-trips passed: real narrow strokes and small snapped shapes, IndexedDB reload, project export/import, mocked cloud reopen, edit/move/resize, cross-tab copy/paste and undo/redo.");
 
     // ---- a continuation sheet: ink lands on the sheet it was drawn on
     await page.click("#add-draw");
