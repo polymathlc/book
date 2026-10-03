@@ -868,6 +868,11 @@ function render({ inspector = true, sheets = true } = {}) {
         footer.append(
           logo,
           el("span", "footer-name", "POLYMATH LEARNING CENTRE"),
+          el(
+            "span",
+            "footer-ip-notice",
+            "All intellectual property belongs to Polymath Learning Centre. Do not reproduce or replicate without prior approval.",
+          ),
           el("span", "footer-page", String(project.firstPage + index)),
         );
         sheet.append(header, content, footer);
