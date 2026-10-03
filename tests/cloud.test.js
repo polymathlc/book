@@ -6,7 +6,8 @@ import {
   unpackProject,
   cloudEntries,
 } from "../cloud-store.js";
-import { blankProject, makeBlock, dotDiagram } from "../core.js";
+import { blankProject, makeBlock, dotDiagram, validateProject } from "../core.js";
+import { drawingFixtures, drawingGeometry } from "./draw-roundtrip-fixtures.mjs";
 function fixture() {
   let data = {
     aiEngine: "openai",
@@ -103,6 +104,24 @@ test("a stale device cannot overwrite a newer cloud revision", async () => {
   assert.equal(f.data().bookStudioProjects[p.id].title, "Newer device");
   assert.equal(f.data().bookStudioProjects[p.id].revision, newer.revision);
   assert.equal(f.files.size, 1);
+});
+
+test("cloud save and reopen preserve narrow drawing and small snapped shape geometry", async () => {
+  const f = fixture();
+  let project = blankProject();
+  const drawings = drawingFixtures();
+  project.pages[0].blocks = drawings.map(({ block }) => block);
+  const expected = drawings.map(({ block }) => drawingGeometry(block));
+  let revision;
+  for (let round = 1; round <= 3; round++) {
+    const entry = await f.repository.save(project, revision);
+    project = validateProject(await f.repository.load(entry));
+    revision = entry.revision;
+    project.pages[0].blocks.forEach((block, index) => {
+      assert.deepEqual(drawingGeometry(block), expected[index], `${drawings[index].name}, cloud reopen ${round}`);
+    });
+  }
+  assert.equal(f.files.size, 1, "old cloud revisions are removed");
 });
 test("cloud listing excludes another account and unexpected storage paths", () => {
   assert.deepEqual(
