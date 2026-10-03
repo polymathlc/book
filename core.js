@@ -349,9 +349,19 @@ export function validateProject(input) {
             "circle",
             "ellipse",
             "line",
+            "path",
           ].includes(b.kind)
             ? b.kind
             : "rounded";
+          if (v.kind === "path") {
+            // A drawing: points are fractions (0..1) of the block's own box, so
+            // it resizes like any shape. Anything that is not a usable path
+            // falls back to a plain rectangle rather than an invisible block.
+            v.points = cleanDrawingPoints(b.points);
+            v.closed = !!b.closed;
+            v.smooth = !!b.smooth;
+            if (v.points.length < 2) v.kind = "rectangle";
+          }
           v.fill = b.fill === "none" ? "none" : validColour(b.fill, "#edf6f6");
           v.stroke = validColour(b.stroke, "#239ba5");
           v.strokeWidth = num(b.strokeWidth, 0, 24, 2);
@@ -540,4 +550,113 @@ export function buildPdf(pages) {
     add(`${String(offsets[i]).padStart(10, "0")} 00000 n \n`);
   add(`trailer\n<< /Size ${count} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
   return new Blob(parts, { type: "application/pdf" });
+}
+
+/* ================= Drawings (the freehand Draw tool) ================= */
+
+export const DRAW_MAX_POINTS = 1200;
+/* Points are stored as fractions of the block's box: [[0.1, 0.5], …]. */
+export function cleanDrawingPoints(points) {
+  if (!Array.isArray(points)) return [];
+  const out = [];
+  for (const p of points) {
+    if (!Array.isArray(p) || p.length < 2) continue;
+    const x = Number(p[0]), y = Number(p[1]);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    out.push([clamp(x, 0, 1), clamp(y, 0, 1)].map((n) => Math.round(n * 1e4) / 1e4));
+    if (out.length >= DRAW_MAX_POINTS) break;
+  }
+  return out;
+}
+
+/* The SVG path data for a "path" shape in its own box. Straight segments by
+   default (a snapped triangle must keep its corners); `smooth` runs a
+   Catmull-Rom curve through the points for freehand ink. */
+export function drawingPathData(b) {
+  const pts = cleanDrawingPoints(b.points).map(([x, y]) => [x * b.w, y * b.height]);
+  if (pts.length < 2) return "";
+  const f = (n) => Math.round(n * 100) / 100;
+  let d = `M${f(pts[0][0])} ${f(pts[0][1])}`;
+  if (b.smooth && pts.length > 2) {
+    const at = (i) => pts[clamp(i, 0, pts.length - 1)];
+    const wrap = b.closed ? (i) => pts[(i + pts.length) % pts.length] : at;
+    const last = b.closed ? pts.length : pts.length - 1;
+    for (let i = 0; i < last; i++) {
+      const p0 = wrap(i - 1), p1 = wrap(i), p2 = wrap(i + 1), p3 = wrap(i + 2);
+      d += ` C${f(p1[0] + (p2[0] - p0[0]) / 6)} ${f(p1[1] + (p2[1] - p0[1]) / 6)} ${f(p2[0] - (p3[0] - p1[0]) / 6)} ${f(p2[1] - (p3[1] - p1[1]) / 6)} ${f(p2[0])} ${f(p2[1])}`;
+    }
+  } else {
+    for (let i = 1; i < pts.length; i++) d += ` L${f(pts[i][0])} ${f(pts[i][1])}`;
+  }
+  return b.closed ? d + " Z" : d;
+}
+
+/* Ramer–Douglas–Peucker: the freehand stroke without the pen-jitter points. */
+export function simplifyPoints(pts, eps) {
+  if (pts.length < 3) return pts.slice();
+  const keep = new Array(pts.length).fill(false);
+  keep[0] = keep[pts.length - 1] = true;
+  const stack = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, z] = stack.pop();
+    let worst = 0, at = -1;
+    const dx = pts[z].x - pts[a].x, dy = pts[z].y - pts[a].y, len = Math.hypot(dx, dy);
+    for (let i = a + 1; i < z; i++) {
+      const d = len < 1e-9
+        ? Math.hypot(pts[i].x - pts[a].x, pts[i].y - pts[a].y)
+        : Math.abs((pts[i].x - pts[a].x) * dy - (pts[i].y - pts[a].y) * dx) / len;
+      if (d > worst) { worst = d; at = i; }
+    }
+    if (at >= 0 && worst > eps) { keep[at] = true; stack.push([a, at], [at, z]); }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
+/* A "path" block's fields from a polyline in CONTENT pixels. The box is the
+   points' bounding box plus room for the line itself, so a perfectly straight
+   or level stroke still has a box to be selected and resized by. */
+export function pathBlockFields(points, { closed = false, smooth = false, stroke = "#1f2933", strokeWidth = 3, fill = "none" } = {}) {
+  const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
+  const pad = Math.max(strokeWidth * 1.5, 4);
+  const x0 = Math.min(...xs) - pad, y0 = Math.min(...ys) - pad;
+  const w = Math.max(...xs) - Math.min(...xs) + pad * 2, height = Math.max(...ys) - Math.min(...ys) + pad * 2;
+  return {
+    kind: "path", fill, stroke, strokeWidth, closed, smooth,
+    points: cleanDrawingPoints(points.map((p) => [(p.x - x0) / w, (p.y - y0) / height])),
+    x: x0, y: y0, w, height, floating: true,
+  };
+}
+
+/* What a finished Draw-tool stroke becomes. A held stroke that snapped to a
+   shape the editor already has — circle, ellipse, rectangle, level line — turns
+   into THAT shape, so it keeps its handles, corner radius and inspector. Every
+   other snapped shape (triangle, polygon, arc, curve, anything tilted) is a
+   "path". An unsnapped stroke is freehand ink. `desc` is a ShapeSnap descriptor
+   (or null) and `toPoints` is ShapeSnap.toPoints, passed in so this stays pure.
+   Everything is clamped to the content area. */
+export function blockFromStroke(desc, rawPoints, style = {}, toPoints = null, bounds = { w: CONTENT_W, h: CONTENT_H }) {
+  const sw = clamp(Number(style.strokeWidth) || 3, 0.5, 24);
+  const base = { stroke: style.stroke || "#1f2933", strokeWidth: sw, fill: "none", floating: true };
+  const fit = (p) => ({ x: clamp(p.x, 0, bounds.w), y: clamp(p.y, 0, bounds.h) });
+  const box = (cx, cy, w, h) => ({ x: cx - w / 2 - sw / 2, y: cy - h / 2 - sw / 2, w: w + sw, height: h + sw });
+  if (desc) {
+    const level = (a, b) => Math.abs(a.y - b.y) < 1e-6;
+    if (desc.kind === "circle" && desc.r >= 4) return { ...base, kind: "circle", ...box(desc.c.x, desc.c.y, desc.r * 2, desc.r * 2) };
+    if (desc.kind === "ellipse" && !desc.rot) return { ...base, kind: "ellipse", ...box(desc.c.x, desc.c.y, desc.rx * 2, desc.ry * 2) };
+    if (desc.kind === "rect" && !desc.rot) return { ...base, kind: "rectangle", ...box(desc.c.x, desc.c.y, desc.w, desc.h) };
+    if (desc.kind === "line" && level(desc.a, desc.b)) {
+      const a = fit(desc.a), b = fit(desc.b);
+      return { ...base, kind: "line", x: Math.min(a.x, b.x), y: a.y - 12, w: Math.max(Math.abs(a.x - b.x), 1), height: 24 };
+    }
+    const pts = (toPoints ? toPoints(desc) : []).map(fit);
+    if (pts.length >= 2) return pathBlockFields(pts, { ...base, closed: !!desc.closed, smooth: false });
+  }
+  const pts = simplifyPoints(rawPoints.map(fit), 0.7);
+  // A tap, or a pen that never really moved, is not a drawing.
+  const span = Math.hypot(
+    Math.max(...pts.map((p) => p.x)) - Math.min(...pts.map((p) => p.x)),
+    Math.max(...pts.map((p) => p.y)) - Math.min(...pts.map((p) => p.y)),
+  );
+  if (pts.length < 2 || !(span >= 2)) return null;
+  return pathBlockFields(pts, { ...base, closed: false, smooth: true });
 }

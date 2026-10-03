@@ -1246,6 +1246,9 @@ function _annotKeyDown(e) {
   if (e.code === 'Space' && !_annotTypingInField(e)) { _annot.space = true; const st = document.getElementById('annotStage'); if (st) st.classList.add('canpan'); _annotUpdateBrushRing(); e.preventDefault(); }
   // Escape backs out of the open transform first, then out of a selection.
   if (e.key === 'Escape' && !_annotTypingInField(e) && _annot.xform) { e.preventDefault(); _annot.drawing = false; annotXformCancel(); return; }
+  // An open pen path is backed out of before anything else: Esc drops the path,
+  // not the selection that was there before it.
+  if (e.key === 'Escape' && !_annotTypingInField(e) && _annotPenActive()) { e.preventDefault(); _annotPenCancel(); return; }
   if (e.key === 'Escape' && !_annotTypingInField(e) && (_annot.sel || _annot.selPts)) { _annot.selPts = null; _annot.drawing = false; annotSelClear(); }
   // Ctrl/Cmd+Z works even from a text label; everything else needs the canvas.
   if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); annotUndo(); return; }
@@ -1257,6 +1260,12 @@ function _annotKeyDown(e) {
   if (k === '+' || k === '=') { e.preventDefault(); annotZoomStep(1.3); return; }
   if (k === '-' || k === '_') { e.preventDefault(); annotZoomStep(1 / 1.3); return; }
   if (k === '0') { e.preventDefault(); annotZoomFit(); return; }
+  // Mid-path, Backspace takes back the last anchor and Enter closes the path.
+  // Enter must NEVER fall through to "save the whole picture" while a path is open.
+  if (_annotPenActive()) {
+    if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); _annotPenRemoveLast(); return; }
+    if (k === 'Enter') { e.preventDefault(); _annotPenClose(); return; }
+  }
   // Delete / Backspace cuts the selection away, the way every image editor does.
   if ((k === 'Delete' || k === 'Backspace') && _annot.sel) { e.preventDefault(); annotSelDelete(); return; }
   // Enter commits an open transform (Photoshop's habit); otherwise it saves.
@@ -1290,6 +1299,9 @@ function _annotUnbindZoomListeners() {
 const ANNOT_CURSORS = { text: 'text', fill: 'cell', wand: 'cell', move: 'move', rotate: 'grab', skew: 'ew-resize', scale: 'move' };
 function _annotSetTool(t) {
   _annotResetCompose();      // never strand the canvas in destination-out
+  // An unfinished pen path or a stroke waiting to snap belongs to the tool being left.
+  if (_annot && _annot.pen && t !== 'penselect') _annotPenCancel();
+  _annotSnapEnd();
   // Leaving Rotate/Skew/Resize settles the open transform: a real change is
   // kept, an untouched one is dropped. Nothing is ever left half-applied.
   if (_annot && _annot.xform && t !== 'rotate' && t !== 'skew' && t !== 'scale') {
@@ -1312,7 +1324,7 @@ function _annotSetTool(t) {
   if (_annot && ANNOT_RING_TOOLS[t]) _annotBrushFlash(); else _annotUpdateBrushRing();
 }
 // Single-key tool switching, Photoshop's letters where they exist.
-const ANNOT_KEYS = { e: 'erase', b: 'paint', g: 'fill', s: 'clone', y: 'history', m: 'select', l: 'lasso', w: 'wand', v: 'move', u: 'line', t: 'text', r: 'rotate', k: 'skew', f: 'scale' };
+const ANNOT_KEYS = { e: 'erase', b: 'paint', g: 'fill', s: 'clone', y: 'history', m: 'select', l: 'lasso', p: 'penselect', w: 'wand', v: 'move', u: 'line', t: 'text', r: 'rotate', k: 'skew', f: 'scale' };
 // A history step remembers the canvas SIZE as well as its pixels: rotating the
 // whole picture grows the canvas, and undoing that has to shrink it back.
 function _annotPushHistory() {
@@ -1419,6 +1431,259 @@ function _annotBrushLine(a, b) {
   if (lw <= 1) { _annotPlotLine(ctx, a.x, a.y, b.x, b.y); }
   else { ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); }
   _annotResetCompose();
+}
+// =====================================================================
+// ✨ HOLD TO SNAP and 🖊️ PEN SELECT — both ride shape-snap.js, which is
+// byte-for-byte the same file in polymathlc/book and polymathlc/anskey.
+//
+// HOLD TO SNAP. Draw with 🖌️ Paint, or ➰ Lasso round something, and keep the
+// pointer still: the stroke is replaced by the neat shape it was meant to be
+// (straight line, arc, smooth curve, circle, ellipse, rectangle, square,
+// triangle, pentagon, hexagon). Keep dragging to adjust it; lift to keep it.
+//   · Paint redraws the SNAPPED shape in the brush over the picture exactly as
+//     it was before the stroke began (the history step pushed at pointer-down),
+//     so nothing underneath is ever lost and ↶ Undo takes the whole stroke back.
+//   · Lasso only snaps to a CLOSED outline: an open line selects nothing.
+//   · 🧽 Erase is deliberately not snapped — an eraser pass is a decision about
+//     what to destroy, and a guessed shape would rub out the wrong place.
+//   · No shape-snap.js (it failed to load) = plain ink, never an error.
+//
+// PEN SELECT is Photoshop's pen used to make a selection: click for a corner
+// anchor, click-and-drag for a smooth one with Bezier handles, click the first
+// anchor (or Enter / double-click) to close. The path is flattened to a polygon
+// and becomes the ordinary `_annot.sel`, so fill / delete / move / resize /
+// rotate / skew / AI fill all work on it unchanged. Nothing touches the pixels
+// until one of those is used.
+// =====================================================================
+const ANNOT_SNAP_TOOLS = { paint: 1, lasso: 1 };
+let _annotSnapHintShown = false;
+function _annotShapeSnap() { return (typeof window !== 'undefined' && window.ShapeSnap && window.ShapeSnap.recognize) ? window.ShapeSnap : null; }
+function _annotPxUnit() { return 1 / (_annotDisplayScale() || 1); }   // image pixels per screen pixel
+// A paint / lasso stroke has begun: start watching for the pointer to rest.
+function _annotSnapBegin(e, p) {
+  _annotSnapEnd();
+  const S = _annotShapeSnap();
+  if (!S || !_annot || !ANNOT_SNAP_TOOLS[_annot.tool]) return;
+  _annot.snapPts = [{ x: p.x, y: p.y }];
+  _annot.snapDesc = null;
+  _annot.snapHold = S.createHold({ onHold: _annotSnapFire });
+  _annot.snapHold.start(e.clientX, e.clientY);
+}
+function _annotSnapEnd() {
+  if (!_annot) return;
+  if (_annot.snapHold) _annot.snapHold.cancel();
+  if (_annot.snapRaf) { cancelAnimationFrame(_annot.snapRaf); _annot.snapRaf = 0; }
+  _annot.snapHold = null; _annot.snapPts = null; _annot.snapDesc = null;
+}
+// The pointer rested long enough: decide what the stroke was meant to be.
+function _annotSnapFire() {
+  const a = _annot, S = _annotShapeSnap();
+  if (!a || !S || !a.drawing || a.snapDesc) return;
+  const unit = _annotPxUnit();
+  if (a.tool === 'lasso') {
+    const rec = a.selPts && a.selPts.length > 3 ? S.recognize(a.selPts, { unit }) : null;
+    if (!rec || !rec.closed) return;                 // an open line has no inside to select
+    a.snapDesc = rec;
+    a.selPts = S.toPoints(rec);
+    _annotSnapAnnounce(rec);
+    return;
+  }
+  if (a.tool === 'paint' && a.snapPts && a.snapPts.length > 3 && !a.shiftSeg) {
+    const top = a.history[a.history.length - 1];
+    if (!top || top.w !== a.canvas.width || top.h !== a.canvas.height) return;   // no clean "before" to go back to
+    const rec = S.recognize(a.snapPts, { unit });
+    if (!rec) return;
+    a.snapDesc = rec;
+    _annotSnapPaint(rec);
+    _annotSnapAnnounce(rec);
+  }
+}
+function _annotSnapAnnounce(rec) {
+  const S = _annotShapeSnap();
+  if (_annotSnapHintShown) return;
+  _annotSnapHintShown = true;
+  showToast('✨ Snapped to a ' + String(S.label(rec)).toLowerCase() + ' — keep dragging to adjust, or lift to keep it', 'info');
+}
+// Put the picture back to how it was before this stroke, then paint the shape.
+function _annotSnapPaint(rec) {
+  const a = _annot, S = _annotShapeSnap(), ctx = a.ctx;
+  const top = a.history[a.history.length - 1];
+  if (!top) return;
+  ctx.putImageData(top.img, 0, 0);
+  const pts = S.toPoints(rec), lw = Math.max(1, Math.round(a.size));
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  _annotPaintCompose(ctx);
+  ctx.lineWidth = lw;
+  if (lw <= 1) {
+    for (let i = 1; i < pts.length; i++) _annotPlotLine(ctx, pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y);
+  } else {
+    ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.stroke();
+  }
+  _annotResetCompose();
+  ctx.beginPath();
+  // A later Shift-click continues from where the SNAPPED shape ends, not from
+  // wherever the freehand stroke happened to stop.
+  a.last = { x: pts[pts.length - 1].x, y: pts[pts.length - 1].y };
+}
+// After the snap the pointer adjusts the shape (a line's end, a circle's radius…).
+function _annotSnapAdjust(p) {
+  const a = _annot, S = _annotShapeSnap();
+  if (!a || !S || !a.snapDesc) return;
+  a.snapDesc = S.drag(a.snapDesc, p);
+  if (a.tool === 'lasso') { a.selPts = S.toPoints(a.snapDesc); return; }
+  if (a.snapRaf) return;                              // one repaint per display frame
+  a.snapRaf = requestAnimationFrame(() => {
+    if (!_annot) return;
+    _annot.snapRaf = 0;
+    if (_annot.snapDesc && _annot.drawing) _annotSnapPaint(_annot.snapDesc);
+  });
+}
+
+// ---- 🖊️ PEN SELECT ---------------------------------------------------------
+const ANNOT_PEN_HIT_PX = 9, ANNOT_PEN_SLOP_PX = 4, ANNOT_PEN_DOUBLE_MS = 400;
+function _annotPenActive() { return !!(_annot && _annot.pen && _annot.pen.anchors.length); }
+function _annotPenCancel() {
+  if (!_annot || !_annot.pen) return;
+  const had = _annot.pen.anchors.length;
+  _annot.pen = null;
+  if (_annot.tool === 'penselect') _annot.drawing = false;
+  return had;
+}
+// Pointer went down with the pen: a new anchor, a grab of an existing one, or the close.
+function _annotPenDown(e, p) {
+  const S = _annotShapeSnap();
+  if (!S) { showToast('Pen select needs shape-snap.js, which did not load', 'error'); return; }
+  const a = _annot, unit = _annotPxUnit(), now = performance.now();
+  if (!a.pen) a.pen = { anchors: [], drag: null, hover: p, lastClick: null, closeHot: false };
+  const pen = a.pen;
+  // Double-click ends an open path, like Photoshop.
+  const lc = pen.lastClick;
+  if (lc && now - lc.t < ANNOT_PEN_DOUBLE_MS && Math.hypot(p.x - lc.x, p.y - lc.y) < 6 * unit && pen.anchors.length >= 3) {
+    _annotPenClose();
+    return;
+  }
+  // Direct-select: a handle or anchor under the pointer is dragged, not duplicated.
+  const hit = pen.anchors.length ? S.hitAnchors(pen.anchors, p, ANNOT_PEN_HIT_PX * unit) : null;
+  if (hit) {
+    if (hit.part === 'anchor' && hit.i === 0 && pen.anchors.length >= 3) { _annotPenClose(); return; }
+    pen.drag = { kind: 'move', hit, from: { x: p.x, y: p.y }, orig: JSON.parse(JSON.stringify(pen.anchors[hit.i])), alt: !!e.altKey };
+    a.drawing = true;
+    return;
+  }
+  if (!pen.anchors.length) { a.sel = null; _annotSelSyncBar(); }   // a new path replaces the old selection
+  let q = p;
+  if (e.shiftKey && pen.anchors.length) q = _annotSnap45(pen.anchors[pen.anchors.length - 1], p);
+  pen.anchors.push({ x: q.x, y: q.y });
+  pen.drag = { kind: 'new', idx: pen.anchors.length - 1, fromClient: { x: e.clientX, y: e.clientY }, moved: false };
+  pen.lastClick = { t: now, x: q.x, y: q.y };
+  a.drawing = true;
+}
+// A drag in progress: pull handles out of a fresh anchor, or move what was grabbed.
+function _annotPenDrag(e) {
+  const S = _annotShapeSnap(), pen = _annot && _annot.pen;
+  if (!S || !pen || !pen.drag) return;
+  const p = _annotPt(e), d = pen.drag;
+  pen.hover = p;
+  if (d.kind === 'new') {
+    if (!d.moved && Math.hypot(e.clientX - d.fromClient.x, e.clientY - d.fromClient.y) < ANNOT_PEN_SLOP_PX) return;
+    d.moved = true;
+    const an = pen.anchors[d.idx];
+    S.setSmoothHandles(an, e.shiftKey ? _annotSnap45(an, p) : p);
+    return;
+  }
+  const an = pen.anchors[d.hit.i], dx = p.x - d.from.x, dy = p.y - d.from.y;
+  if (d.hit.part === 'anchor') {
+    an.x = d.orig.x + dx; an.y = d.orig.y + dy;
+    ['hin', 'hout'].forEach(k => { if (d.orig[k]) an[k] = { x: d.orig[k].x + dx, y: d.orig[k].y + dy }; });
+    return;
+  }
+  const other = d.hit.part === 'hout' ? 'hin' : 'hout';
+  an[d.hit.part] = { x: p.x, y: p.y };
+  // A smooth anchor keeps its handles in line; Alt breaks that for this one.
+  if (!d.alt && an[other]) an[other] = { x: 2 * an.x - p.x, y: 2 * an.y - p.y };
+}
+// The pointer moved with no button down: the rubber band and the "close here" cue.
+function _annotPenHover(e) {
+  const pen = _annot && _annot.pen;
+  if (!pen || !pen.anchors.length) return;
+  const c = document.getElementById('annotCanvas');
+  if (!c || e.target !== c) return;
+  const p = _annotPt(e), first = pen.anchors[0];
+  pen.hover = p;
+  pen.closeHot = pen.anchors.length >= 3 && Math.hypot(p.x - first.x, p.y - first.y) <= ANNOT_PEN_HIT_PX * _annotPxUnit();
+}
+function _annotPenRemoveLast() {
+  const pen = _annot && _annot.pen;
+  if (!pen || !pen.anchors.length) return;
+  pen.anchors.pop();
+  pen.lastClick = null;
+  if (!pen.anchors.length) _annotPenCancel();
+}
+// Close the path and make it the selection.
+function _annotPenClose() {
+  const S = _annotShapeSnap(), pen = _annot && _annot.pen;
+  if (!S || !pen) return;
+  if (pen.anchors.length < 3) { showToast('Click at least three points, then close the path', 'info'); return; }
+  const poly = S.flattenAnchors(pen.anchors, true, Math.max(0.25, _annotPxUnit() * 0.4));
+  if (poly.length < 3 || S.polygonArea(poly) < 9) {
+    _annotPenCancel();
+    showToast('That path encloses no area — try again', 'info');
+    return;
+  }
+  _annot.sel = { pts: poly };
+  _annot.selPts = null;
+  _annot.pen = null;
+  _annot.drawing = false;
+  _annotSelSyncBar();
+  showToast('Area selected — pick a fill option above the image', 'info');
+}
+// The in-progress path, drawn on the selection canvas next to the marching ants.
+// `s` is the display scale, so every size is in SCREEN pixels whatever the zoom.
+function _annotPenDraw(sctx, pen, s) {
+  const S = _annotShapeSnap();
+  if (!S || !pen.anchors.length) return;
+  sctx.save();                       // the ants loop shares this context frame to frame
+  const anchors = pen.anchors.map(a => Object.assign({}, a));
+  const preview = pen.hover && !(pen.drag && pen.drag.kind === 'new' && pen.drag.moved) ? pen.hover : null;
+  const draft = preview ? anchors.concat([{ x: preview.x, y: preview.y }]) : anchors;
+  const flat = S.flattenAnchors(draft, false, 0.5 / s);
+  sctx.setLineDash([]);
+  sctx.lineJoin = 'round'; sctx.lineCap = 'round';
+  const trace = pts => { sctx.beginPath(); pts.forEach((q, i) => i ? sctx.lineTo(q.x, q.y) : sctx.moveTo(q.x, q.y)); };
+  if (flat.length > 1) {
+    trace(flat);
+    sctx.lineWidth = 3.2 / s; sctx.strokeStyle = 'rgba(255,255,255,0.95)'; sctx.stroke();
+    sctx.lineWidth = 1.4 / s; sctx.strokeStyle = '#0a6cff'; sctx.stroke();
+  }
+  if (anchors.length >= 3) {           // where the path would close, faintly
+    sctx.setLineDash([4 / s, 4 / s]);
+    const last = anchors[anchors.length - 1];
+    const closing = S.flattenAnchors([last, anchors[0]], false, 0.5 / s);
+    trace(closing);
+    sctx.lineWidth = 1 / s; sctx.strokeStyle = 'rgba(10,108,255,0.55)'; sctx.stroke();
+    sctx.setLineDash([]);
+  }
+  const r = 3.4 / s;
+  anchors.forEach(a => {
+    ['hin', 'hout'].forEach(k => {
+      if (!a[k]) return;
+      sctx.beginPath(); sctx.moveTo(a.x, a.y); sctx.lineTo(a[k].x, a[k].y);
+      sctx.lineWidth = 1 / s; sctx.strokeStyle = '#0a6cff'; sctx.stroke();
+      sctx.beginPath(); sctx.arc(a[k].x, a[k].y, r * 0.8, 0, Math.PI * 2);
+      sctx.fillStyle = '#ffffff'; sctx.fill(); sctx.stroke();
+    });
+  });
+  anchors.forEach((a, i) => {
+    const first = i === 0, hot = first && pen.closeHot;
+    const rr = hot ? r * 1.7 : r;
+    sctx.beginPath(); sctx.rect(a.x - rr, a.y - rr, rr * 2, rr * 2);
+    sctx.fillStyle = hot ? '#16a34a' : (i === anchors.length - 1 ? '#0a6cff' : '#ffffff');
+    sctx.fill();
+    sctx.lineWidth = 1.2 / s; sctx.strokeStyle = hot ? '#ffffff' : '#0a6cff'; sctx.stroke();
+  });
+  sctx.restore();
 }
 // ---- SELECTION (rectangle / lasso) with marching ants, then fill the area
 // with a flat colour, the surrounding texture, or AI content-aware fill. ----
@@ -1535,6 +1800,8 @@ function _annotAntsLoop() {
     sctx.strokeStyle = '#ffffff'; sctx.lineDashOffset = -phase / s; sctx.stroke(path);
     sctx.strokeStyle = '#111111'; sctx.lineDashOffset = -(phase + 6) / s; sctx.stroke(path);
   }
+  // 🖊️ Pen select: the path being laid down, with its anchors and handles.
+  if (_annot.pen) _annotPenDraw(sctx, _annot.pen, _annotDisplayScale() || 1);
   // The transform box rides the same overlay: the object's real outline while
   // it is being turned, slanted or resized, with grab handles on it while the
   // Resize tool is the one in hand.
@@ -1717,6 +1984,7 @@ function _annotDown(e) {
   _annotSyncControls();
   const p = _annotPt(e), ctx = _annot.ctx;
   if (_annot.tool === 'text') { _annotPlaceText(p); return; }
+  if (_annot.tool === 'penselect') { _annotPenDown(e, p); return; }
   if (_annot.tool === 'fill') { _annotPushHistory(); _annotFloodFill(p.x, p.y); return; }
   if (_annot.tool === 'wand') {
     const m = _annotMagicWand(p.x, p.y, e.altKey);
@@ -1768,6 +2036,7 @@ function _annotDown(e) {
     _annot.selPts = _annot.tool === 'select' ? [p, p, p, p] : [p];
     _annot.start = p;
     _annot.drawing = true;
+    if (_annot.tool === 'lasso') _annotSnapBegin(e, p);   // hold still to snap the outline
     return;
   }
   if (_annot.tool === 'clone') {
@@ -1812,6 +2081,7 @@ function _annotDown(e) {
   _annot.drawing = true;
   _annot.last = p;
   _annot.shiftSeg = null; // Shift-straight segment state (start pt + snapshot)
+  if (_annot.tool === 'paint') _annotSnapBegin(e, p);   // hold still to snap the stroke to a shape
   // Brush size is measured in IMAGE pixels (Photoshop-style): size 1 = one pixel,
   // independent of the current zoom, so precise edits are possible when zoomed in.
   const lw = Math.max(1, Math.round(_annot.size));
@@ -1832,6 +2102,10 @@ function _annotMove(e) {
   if (!_annot || !_annot.drawing) return;
   e.preventDefault();
   const p = _annotPt(e), ctx = _annot.ctx;
+  if (_annot.tool === 'penselect') { _annotPenDrag(e); return; }
+  if (_annot.snapHold) _annot.snapHold.move(e.clientX, e.clientY);   // a real move restarts the wait
+  // Once snapped, the pointer adjusts the SHAPE rather than drawing further ink.
+  if (_annot.snapDesc && ANNOT_SNAP_TOOLS[_annot.tool]) { _annotSnapAdjust(p); return; }
   if (_annot.tool === 'scale') {
     if (_annot.xfScale) { _annotXformScaleDrag(p, e.shiftKey); return; }
     if (_annot.xfMove && _annot.start) {
@@ -1924,9 +2198,17 @@ function _annotMove(e) {
     ctx.beginPath(); ctx.moveTo(p.x, p.y);
   }
   _annot.last = p;
+  if (_annot.snapPts && _annot.snapPts.length < 6000) _annot.snapPts.push({ x: p.x, y: p.y });   // the raw stroke, for hold-to-snap
 }
 function _annotUp() {
   if (!_annot) return;
+  _annotSnapEnd();   // the pointer is up: nothing is waiting to snap, and no repaint may land after this
+  if (_annot.tool === 'penselect') {
+    // The path stays open between clicks; only the drag that was in progress ends.
+    if (_annot.pen) _annot.pen.drag = null;
+    _annot.drawing = false;
+    return;
+  }
   if (_annot.xform && _annot.tool === 'scale') {
     // The box has moved or changed size, so the pivot goes back to its middle —
     // otherwise a turn afterwards swings the object round a point off to one side.
@@ -2090,6 +2372,7 @@ function closeAnnotTool() {
   const br = document.getElementById('annotBrushRing'); if (br) br.remove();
   const bh = document.getElementById('annotBrushHud'); if (bh) bh.remove();
   if (_annot) clearTimeout(_annot.hudTimer);
+  _annotSnapEnd();
   const sc = document.getElementById('annotSelCanvas'); if (sc) sc.getContext('2d').clearRect(0, 0, sc.width, sc.height);
   _annotUnbindZoomListeners();
   _annot = null;
@@ -2130,6 +2413,7 @@ document.addEventListener('pointermove', function (e) {
   _annotTrackPointer(e);   // the ring follows the pointer whatever else is going on
   if (_annot.panning) { _annotPanMove(e); return; }
   if (_annot.drawing) { _annotMove(e); return; }
+  if (_annot.tool === 'penselect') { _annotPenHover(e); return; }   // rubber band + "close here" cue
   // Hovering the transform box: the pointer says what each handle will do, so
   // a resize box behaves like one everywhere else does.
   if (_annot.tool === 'scale' && _annot.xform) {
